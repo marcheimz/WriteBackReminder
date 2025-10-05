@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>WriteBackReminder – Sign in</title>
+    <style>
+      body { font-family: sans-serif; margin: 2rem auto; max-width: 480px; }
+      header { margin-bottom: 2rem; }
+      form { display: flex; flex-direction: column; gap: 1rem; }
+      select { padding: 0.5rem; font-size: 1rem; }
+      button { padding: 0.6rem 1rem; font-size: 1rem; }
+      .errors { background: #ffefef; border: 1px solid #cc4444; color: #842222; padding: 0.75rem; margin-bottom: 1rem; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>WriteBackReminder</h1>
+      <p>Select who you are to start logging conversations.</p>
+    </header>
+
+    {% if errors %}
+    <div class="errors">
+      <ul>
+        {% for error in errors %}
+        <li>{{ error }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+    <form method="post" action="{{ url_for('login') }}">
+      <label for="user">Active user</label>
+      <select id="user" name="user" required>
+        <option value="">Choose a user…</option>
+        {% for user in available_users %}
+        <option value="{{ user }}" {% if user == selected_user %}selected{% endif %}>{{ user|title }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit">Continue</button>
+    </form>
+  </body>
+</html>

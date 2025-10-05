@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>WriteBackReminder</title>
+    <style>
+      body { font-family: sans-serif; margin: 2rem auto; max-width: 720px; }
+      header { margin-bottom: 1.5rem; display: flex; justify-content: space-between; align-items: center; }
+      h1 { margin: 0; }
+      form { margin-bottom: 1.5rem; }
+      label { display: block; margin-bottom: 0.5rem; font-weight: 600; }
+      input[type="text"], textarea { width: 100%; font-size: 1rem; padding: 0.4rem; }
+      textarea { min-height: 7rem; }
+      button { padding: 0.5rem 1rem; font-size: 1rem; }
+      .errors { background: #ffefef; border: 1px solid #cc4444; color: #842222; padding: 0.75rem; margin-bottom: 1rem; }
+      .history { border-top: 1px solid #ddd; padding-top: 1rem; }
+      .history-entry { border: 1px solid #ccc; padding: 0.75rem; margin-bottom: 0.75rem; border-radius: 4px; }
+      .history-entry time { display: block; font-size: 0.85rem; color: #666; margin-bottom: 0.35rem; }
+      .people { margin-bottom: 1rem; }
+      .people a { display: inline-block; margin: 0 0.5rem 0.5rem 0; padding: 0.35rem 0.65rem; border: 1px solid #666; border-radius: 4px; text-decoration: none; color: inherit; }
+      .people a.active { background: #333; color: #fff; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div>
+        <h1>WriteBackReminder</h1>
+        <p>Logged in as {{ active_user|title }}</p>
+      </div>
+      <form method="post" action="{{ url_for('logout') }}">
+        <button type="submit">Switch user</button>
+      </form>
+    </header>
+
+    {% if errors %}
+    <div class="errors">
+      <ul>
+        {% for error in errors %}
+        <li>{{ error }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+    <section class="people">
+      <strong>Known contacts:</strong>
+      {% if known_people %}
+        {% for person in known_people %}
+        <a href="{{ url_for('conversations', person=person) }}" class="{% if person == selected_person %}active{% endif %}">{{ person }}</a>
+        {% endfor %}
+      {% else %}
+      <span>No past conversations yet.</span>
+      {% endif %}
+    </section>
+
+    <section>
+      <form method="post" action="{{ url_for('log_conversation') }}">
+        <label for="person">Who did you speak with?</label>
+        <input
+          type="text"
+          id="person"
+          name="person"
+          list="known-people"
+          value="{{ selected_person or '' }}"
+          placeholder="Type a name"
+          autocomplete="off"
+          required
+        />
+        <datalist id="known-people">
+          {% for person in known_people %}
+          <option value="{{ person }}">{{ person }}</option>
+          {% endfor %}
+        </datalist>
+
+        <label for="summary">Conversation summary</label>
+        <textarea id="summary" name="summary" placeholder="What was discussed?" required></textarea>
+
+        <button type="submit">Log conversation</button>
+      </form>
+    </section>
+
+    {% if selected_person %}
+    <section class="history">
+      <h2>Conversation history with {{ selected_person }}</h2>
+      {% if conversations %}
+        {% for entry in conversations|reverse %}
+        <article class="history-entry">
+          <time datetime="{{ entry.timestamp.isoformat() }}">{{ entry.timestamp.strftime('%Y-%m-%d %H:%M UTC') }}</time>
+          <p>{{ entry.summary }}</p>
+        </article>
+        {% endfor %}
+      {% else %}
+      <p>No conversations logged yet. Add a summary above to get started.</p>
+      {% endif %}
+    </section>
+    {% endif %}
+  </body>
+</html>
