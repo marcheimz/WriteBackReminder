@@ -25,7 +25,12 @@
     <header>
       <div>
         <h1>WriteBackReminder</h1>
-        <p>Logged in as {{ active_user|title }}</p>
+        <p>
+          Logged in as {{ active_user_name or active_user_email }}
+          {% if active_user_name and active_user_email and active_user_name != active_user_email %}
+          ({{ active_user_email }})
+          {% endif %}
+        </p>
       </div>
       <form method="post" action="{{ url_for('logout') }}">
         <button type="submit">Switch user</button>

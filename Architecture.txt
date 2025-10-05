@@ -20,15 +20,16 @@ use the venv38
 
 Actual implementation:
 
-- `writebackreminder/app.py` exposes a Quart application factory with routes for logging in (`/`, `/login`, `/logout`) and managing conversations (`/conversations`, `/log`). The selected user is stored in the session for the duration of the visit.
+- `writebackreminder/app.py` exposes a Quart application factory with routes for logging in (`/`, `/login`, `/login/google`, `/auth/google`, `/logout`) and managing conversations (`/conversations`, `/log`). The selected user is stored in the session for the duration of the visit.
+- Google OAuth sign-in is optional. Client credentials are read from `google_oauth.json` in the project root by default (override with `GOOGLE_CREDENTIALS_FILE`). The app performs the OAuth flow directly against Google endpoints using `httpx`, then maps verified emails to hard-coded users through `GOOGLE_EMAIL_TO_USER`.
 - The app maintains an in-memory `ConversationStore` (`writebackreminder/datastore.py`) that stores timestamped summaries keyed by `(user, person)`.
 - Available users are currently hard-coded to `alice`, `bob`, and `carol` and selectable from the landing page dropdown.
 - Conversation logging validates required fields, records entries, and redirects back to the history view for the chosen person.
-- `templates/login.html` renders the landing/login page, while `templates/index.html` provides the form-driven dashboard with known contacts and conversation history.
-- `main.py` instantiates the Quart app for local development, and `requirements.txt` pins the Quart dependency for installation inside `.venv38`.
+- `templates/login.html` renders the landing/login page (manual and Google sign-in), while `templates/index.html` provides the form-driven dashboard with known contacts and conversation history.
+- `main.py` instantiates the Quart app for local development, and `requirements.txt` pins the Quart + httpx dependencies for installation inside `.venv38`.
 
 Next steps:
 
 - Stub out scheduling/LLM integration once APIs are defined.
 - Persist conversation history in a real datastore when requirements solidify.
-- Flesh out user management beyond the hard-coded list.
+- Flesh out user management beyond the hard-coded list and improve Google account provisioning.
