@@ -1,0 +1,23 @@
+We need the following:
+
+- a quart webserver.
+
+Functionality to have different selected users (hard coded list for now).
+
+This app should do the following:
+
+Keep track of conversations and create reminders to write back based on history with a person.
+
+Every time I talk to a person as a user, I can select that person from a dropdown and write as a text a summary of the conversation.
+This will then be stored in some simple database key(user, person_that_user_talked_with) -> List[conversations].
+
+From time to time a script (this should be specifyable) is run and all of the recent conversations are fed into an LLM and the llm makes suggestions on what the user should do next. It should assign an urgency of how important a response right now is.
+
+I want for now a simple webapp that mostly uses forms that communicates with a python backedn (Quart)
+
+use the venv38
+
+
+Actual implementation:
+
+TODO
