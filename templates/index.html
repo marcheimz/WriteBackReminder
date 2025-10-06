@@ -5,14 +5,22 @@
     <title>WriteBackReminder</title>
     <style>
       body { font-family: sans-serif; margin: 2rem auto; max-width: 720px; }
-      header { margin-bottom: 1.5rem; display: flex; justify-content: space-between; align-items: center; }
+      header { margin-bottom: 1.5rem; display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
       h1 { margin: 0; }
       form { margin-bottom: 1.5rem; }
       label { display: block; margin-bottom: 0.5rem; font-weight: 600; }
       input[type="text"], textarea { width: 100%; font-size: 1rem; padding: 0.4rem; }
       textarea { min-height: 7rem; }
       button { padding: 0.5rem 1rem; font-size: 1rem; }
+      .actions { display: flex; align-items: center; gap: 0.75rem; }
+      .actions form { margin: 0; }
+      .recommendations-link { padding: 0.45rem 0.9rem; border: 1px solid #333; border-radius: 4px; text-decoration: none; color: #333; }
+      .recommendations-link:hover { background: #333; color: #fff; }
       .errors { background: #ffefef; border: 1px solid #cc4444; color: #842222; padding: 0.75rem; margin-bottom: 1rem; }
+      .recommendation { border: 1px solid #4a7ebb; background: #eef4ff; padding: 1rem; border-radius: 4px; margin: 1.5rem 0; }
+      .recommendation h2 { margin-top: 0; }
+      .recommendation .urgency { font-weight: 600; }
+      .recommendation .generated { font-size: 0.9rem; color: #555; }
       .history { border-top: 1px solid #ddd; padding-top: 1rem; }
       .history-entry { border: 1px solid #ccc; padding: 0.75rem; margin-bottom: 0.75rem; border-radius: 4px; }
       .history-entry time { display: block; font-size: 0.85rem; color: #666; margin-bottom: 0.35rem; }
@@ -32,9 +40,15 @@
           {% endif %}
         </p>
       </div>
-      <form method="post" action="{{ url_for('logout') }}">
-        <button type="submit">Switch user</button>
-      </form>
+      <div class="actions">
+        <form method="post" action="{{ url_for('refresh_recommendations') }}">
+          <button type="submit">Refresh follow-ups</button>
+        </form>
+        <a href="{{ url_for('recommendations_page') }}" class="recommendations-link">Follow-up suggestions</a>
+        <form method="post" action="{{ url_for('logout') }}">
+          <button type="submit">Switch user</button>
+        </form>
+      </div>
     </header>
 
     {% if errors %}
@@ -83,6 +97,16 @@
         <button type="submit">Log conversation</button>
       </form>
     </section>
+
+    {% if recommendation %}
+    <section class="recommendation">
+      <h2>Suggested follow-up</h2>
+      <p class="urgency">Urgency: {{ recommendation.urgency }} / 10</p>
+      <p class="summary">{{ recommendation.proposed_response }}</p>
+      <p class="rationale"><strong>Why:</strong> {{ recommendation.rationale }}</p>
+      <p class="generated">Generated {{ recommendation.generated_at.strftime('%Y-%m-%d %H:%M UTC') }}</p>
+    </section>
+    {% endif %}
 
     {% if selected_person %}
     <section class="history">

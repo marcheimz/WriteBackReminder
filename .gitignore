@@ -1,1 +1,4 @@
 google_oauth.json
+secrets/
+__pycache__/
+**/__pycache__/

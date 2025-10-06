@@ -1,9 +1,11 @@
 """Quart application factory for the WriteBackReminder web UI."""
 from __future__ import annotations
 
+import asyncio
 import json
-import os
 import secrets
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Iterable, Optional, Tuple
 from urllib.parse import urlencode
@@ -11,56 +13,140 @@ from urllib.parse import urlencode
 import httpx
 from quart import Quart, redirect, render_template, request, session, url_for
 
-from .datastore import ConversationStore
+from .ai_client import DEFAULT_MODEL as FOLLOWUP_DEFAULT_MODEL, generate_followup, load_api_key
+from .config import get_config
+from .datastore import ConversationStore, RecommendationEntry
 
-DEFAULT_GOOGLE_CREDENTIALS_FILE = "google_oauth.json"
 GOOGLE_AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 GOOGLE_USERINFO_ENDPOINT = "https://openidconnect.googleapis.com/v1/userinfo"
 
 
-def _load_google_credentials(base_dir: Path) -> Tuple[Optional[str], Optional[str], Optional[Path]]:
+def _load_google_credentials(credentials_path: Path) -> Tuple[Optional[str], Optional[str]]:
     """Return Google OAuth client credentials loaded from JSON if available."""
-    configured_path = os.getenv("GOOGLE_CREDENTIALS_FILE")
-    if configured_path:
-        candidate = Path(configured_path).expanduser()
-    else:
-        candidate = base_dir.parent / DEFAULT_GOOGLE_CREDENTIALS_FILE
 
-    if not candidate.is_file():
-        return None, None, None
+    if not credentials_path.is_file():
+        return None, None
 
     try:
-        payload = json.loads(candidate.read_text(encoding="utf-8"))
+        payload = json.loads(credentials_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return None, None, candidate
+        return None, None
 
     client_id = payload.get("client_id")
     client_secret = payload.get("client_secret")
     if not client_id or not client_secret:
-        return None, None, candidate
+        return None, None
 
-    return str(client_id), str(client_secret), candidate
+    return str(client_id), str(client_secret)
 
 
 def create_app() -> Quart:
     base_dir = Path(__file__).resolve().parent
     template_dir = base_dir.parent / "templates"
 
+    app_config = get_config()
+
     app = Quart(__name__, template_folder=str(template_dir))
-    app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "dev")
+    app.config["APP_CONFIG"] = app_config
+    app.config["SECRET_KEY"] = app_config.secret_key
 
-    user_data_dir = base_dir.parent / "userdata"
+    user_data_dir = app_config.user_data_dir
+    recommendation_data_dir = app_config.recommendations_dir
+    app_config.google_credentials_path.parent.mkdir(parents=True, exist_ok=True)
+    user_data_dir.mkdir(parents=True, exist_ok=True)
+    recommendation_data_dir.mkdir(parents=True, exist_ok=True)
+
     app.config["USER_DATA_DIR"] = str(user_data_dir)
-    app.conversation_store = ConversationStore(user_data_dir)
+    app.config["RECOMMENDATION_DATA_DIR"] = str(recommendation_data_dir)
+    app.conversation_store = ConversationStore(user_data_dir, recommendation_data_dir)
 
-    google_client_id, google_client_secret, credentials_path = _load_google_credentials(base_dir)
+    followup_hours = app_config.followup_refresh_hours
+    followup_model = app_config.followup_model or FOLLOWUP_DEFAULT_MODEL
+    app.config["FOLLOWUP_REFRESH_HOURS"] = followup_hours
+    app.config["FOLLOWUP_REFRESH_INTERVAL_SECONDS"] = (
+        int(followup_hours * 3600) if followup_hours > 0 else 0
+    )
+    app.config["FOLLOWUP_MODEL"] = followup_model
+    app._followup_refresh_lock = asyncio.Lock()
+    app._followup_last_run = 0.0
+
+    google_client_id, google_client_secret = _load_google_credentials(app_config.google_credentials_path)
     app.config["GOOGLE_CLIENT_ID"] = google_client_id
     app.config["GOOGLE_CLIENT_SECRET"] = google_client_secret
-    app.config["GOOGLE_CREDENTIALS_PATH"] = str(credentials_path) if credentials_path else None
+    app.config["GOOGLE_CREDENTIALS_PATH"] = str(app_config.google_credentials_path)
 
     google_login_enabled = bool(google_client_id and google_client_secret)
     app.config["GOOGLE_LOGIN_ENABLED"] = google_login_enabled
+
+    async def maybe_refresh_followups(force: bool = False) -> None:
+        """Refresh stored follow-up recommendations if the interval has elapsed."""
+
+        if not load_api_key():
+            return
+
+        interval = app.config["FOLLOWUP_REFRESH_INTERVAL_SECONDS"]
+        now = time.monotonic()
+        if not force and interval and (now - app._followup_last_run) < interval:
+            return
+
+        async with app._followup_refresh_lock:
+            now = time.monotonic()
+            if not force and interval and (now - app._followup_last_run) < interval:
+                return
+            await _refresh_followups()
+            app._followup_last_run = time.monotonic()
+
+    async def _refresh_followups() -> None:
+        """Iterate over stored conversations and update follow-up recommendations."""
+
+        model = app.config["FOLLOWUP_MODEL"]
+        refresh_hours = app.config["FOLLOWUP_REFRESH_HOURS"]
+        max_age = timedelta(hours=refresh_hours) if refresh_hours > 0 else None
+
+        store = app.conversation_store
+        now = datetime.now(timezone.utc)
+
+        for user in store.users():
+            people = store.people_for_user(user)
+            for person in people:
+                entries = store.conversations(user, person)
+                if not entries:
+                    continue
+
+                existing = store.recommendation_for(user, person)
+                if existing and max_age and (now - existing.generated_at) < max_age:
+                    continue
+
+                history = [(entry.timestamp, entry.summary) for entry in entries]
+                try:
+                    recommendation = await asyncio.to_thread(
+                        generate_followup,
+                        user,
+                        person,
+                        history,
+                        model=model,
+                        current_time=datetime.now(timezone.utc),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    app.logger.warning(
+                        "Failed to generate follow-up for user=%s person=%s: %s",
+                        user,
+                        person,
+                        exc,
+                    )
+                    continue
+
+                store.set_recommendation(
+                    user,
+                    person,
+                    RecommendationEntry(
+                        proposed_response=recommendation.proposed_response,
+                        urgency=recommendation.urgency,
+                        rationale=recommendation.rationale,
+                        generated_at=recommendation.generated_at,
+                    ),
+                )
 
     def login_context(errors: Iterable[str] = ()) -> Dict[str, object]:
         return {
@@ -193,6 +279,8 @@ def create_app() -> Quart:
         if not user_email:
             return redirect(url_for("landing"))
 
+        await maybe_refresh_followups()
+
         selected_person = request.args.get("person") or None
         known_people = app.conversation_store.people_for_user(user_email)
         conversation_entries = (
@@ -201,15 +289,57 @@ def create_app() -> Quart:
             else ()
         )
 
+        recommendation = (
+            app.conversation_store.recommendation_for(user_email, selected_person)
+            if selected_person
+            else None
+        )
+
         context: Dict[str, Optional[str]] = {
             "active_user_email": user_email,
             "active_user_name": session.get("active_user_name"),
             "selected_person": selected_person,
             "known_people": known_people,
             "conversations": conversation_entries,
+            "recommendation": recommendation,
             "errors": (),
         }
         return await render_template("index.html", **context)
+
+    @app.post("/recommendations/refresh")
+    async def refresh_recommendations() -> str:
+        user_email = session.get("active_user_email")
+        if not user_email:
+            return redirect(url_for("landing"))
+
+        await maybe_refresh_followups(force=True)
+
+        referer = request.headers.get("Referer")
+        if referer and referer.startswith(request.host_url):
+            return redirect(referer)
+        return redirect(url_for("recommendations_page"))
+
+    @app.get("/recommendations")
+    async def recommendations_page() -> str:
+        user_email = session.get("active_user_email")
+        if not user_email:
+            return redirect(url_for("landing"))
+
+        await maybe_refresh_followups()
+
+        recommendations = app.conversation_store.recommendations_for_user(user_email)
+        sorted_recs = sorted(
+            recommendations.items(),
+            key=lambda item: item[1].urgency,
+            reverse=True,
+        )
+
+        context = {
+            "active_user_email": user_email,
+            "active_user_name": session.get("active_user_name"),
+            "recommendations": sorted_recs,
+        }
+        return await render_template("recommendations.html", **context)
 
     @app.post("/log")
     async def log_conversation() -> str:
@@ -241,6 +371,9 @@ def create_app() -> Quart:
                 "selected_person": person or None,
                 "known_people": known_people,
                 "conversations": conversation_entries,
+                "recommendation": app.conversation_store.recommendation_for(user_email, person)
+                if person
+                else None,
                 "errors": tuple(errors),
             }
             return await render_template("index.html", **context), 400

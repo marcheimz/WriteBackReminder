@@ -1,0 +1,9 @@
+{
+  "secret_key": "change-me",
+  "google_credentials_path": "secrets/google_oauth.json",
+  "user_data_dir": "userdata",
+  "recommendations_dir": "userdata/recommendations",
+  "followup_refresh_hours": 24,
+  "followup_model": "gpt-4o-2024-08-06",
+  "openai_api_key": "sk-your-key"
+}
