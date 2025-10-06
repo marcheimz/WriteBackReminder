@@ -69,7 +69,8 @@ def create_app() -> Quart:
     )
     app.config["FOLLOWUP_MODEL"] = followup_model
     app._followup_refresh_lock = asyncio.Lock()
-    app._followup_last_run = 0.0
+    app._followup_last_run: Dict[str, float] = {}
+    app._followup_in_progress: Dict[str, bool] = {}
 
     google_client_id, google_client_secret = _load_google_credentials(app_config.google_credentials_path)
     app.config["GOOGLE_CLIENT_ID"] = google_client_id
@@ -79,25 +80,39 @@ def create_app() -> Quart:
     google_login_enabled = bool(google_client_id and google_client_secret)
     app.config["GOOGLE_LOGIN_ENABLED"] = google_login_enabled
 
-    async def maybe_refresh_followups(force: bool = False) -> None:
+    async def maybe_refresh_followups(force: bool = False, user_filter: Optional[str] = None) -> None:
         """Refresh stored follow-up recommendations if the interval has elapsed."""
 
         if not load_api_key():
             return
 
         interval = app.config["FOLLOWUP_REFRESH_INTERVAL_SECONDS"]
-        now = time.monotonic()
-        if not force and interval and (now - app._followup_last_run) < interval:
-            return
+        key = user_filter or "__global__"
+
+        if not force and interval:
+            now = time.monotonic()
+            last = app._followup_last_run.get(key, 0.0)
+            if (now - last) < interval:
+                return
 
         async with app._followup_refresh_lock:
-            now = time.monotonic()
-            if not force and interval and (now - app._followup_last_run) < interval:
-                return
-            await _refresh_followups()
-            app._followup_last_run = time.monotonic()
+            if not force and interval:
+                now = time.monotonic()
+                last = app._followup_last_run.get(key, 0.0)
+                if (now - last) < interval:
+                    return
 
-    async def _refresh_followups() -> None:
+            app._followup_in_progress[key] = True
+            completed = False
+            try:
+                await _refresh_followups(user_filter=user_filter, force=force)
+                completed = True
+            finally:
+                app._followup_in_progress.pop(key, None)
+                if completed:
+                    app._followup_last_run[key] = time.monotonic()
+
+    async def _refresh_followups(user_filter: Optional[str] = None, *, force: bool = False) -> None:
         """Iterate over stored conversations and update follow-up recommendations."""
 
         model = app.config["FOLLOWUP_MODEL"]
@@ -107,7 +122,8 @@ def create_app() -> Quart:
         store = app.conversation_store
         now = datetime.now(timezone.utc)
 
-        for user in store.users():
+        users = (store.users() if user_filter is None else (user_filter,))
+        for user in users:
             people = store.people_for_user(user)
             for person in people:
                 entries = store.conversations(user, person)
@@ -115,10 +131,10 @@ def create_app() -> Quart:
                     continue
 
                 existing = store.recommendation_for(user, person)
-                if existing and max_age and (now - existing.generated_at) < max_age:
+                if (not force) and existing and max_age and (now - existing.generated_at) < max_age:
                     continue
 
-                history = [(entry.timestamp, entry.summary) for entry in entries]
+                history = [(entry.timestamp, entry.entry_type, entry.summary) for entry in entries]
                 try:
                     recommendation = await asyncio.to_thread(
                         generate_followup,
@@ -279,7 +295,7 @@ def create_app() -> Quart:
         if not user_email:
             return redirect(url_for("landing"))
 
-        await maybe_refresh_followups()
+        await maybe_refresh_followups(user_filter=user_email)
 
         selected_person = request.args.get("person") or None
         known_people = app.conversation_store.people_for_user(user_email)
@@ -295,6 +311,8 @@ def create_app() -> Quart:
             else None
         )
 
+        refresh_in_progress = bool(app._followup_in_progress.get(user_email))
+
         context: Dict[str, Optional[str]] = {
             "active_user_email": user_email,
             "active_user_name": session.get("active_user_name"),
@@ -302,6 +320,7 @@ def create_app() -> Quart:
             "known_people": known_people,
             "conversations": conversation_entries,
             "recommendation": recommendation,
+            "refresh_in_progress": refresh_in_progress,
             "errors": (),
         }
         return await render_template("index.html", **context)
@@ -312,7 +331,7 @@ def create_app() -> Quart:
         if not user_email:
             return redirect(url_for("landing"))
 
-        await maybe_refresh_followups(force=True)
+        await maybe_refresh_followups(force=True, user_filter=user_email)
 
         referer = request.headers.get("Referer")
         if referer and referer.startswith(request.host_url):
@@ -325,7 +344,7 @@ def create_app() -> Quart:
         if not user_email:
             return redirect(url_for("landing"))
 
-        await maybe_refresh_followups()
+        await maybe_refresh_followups(user_filter=user_email)
 
         recommendations = app.conversation_store.recommendations_for_user(user_email)
         sorted_recs = sorted(
@@ -338,6 +357,7 @@ def create_app() -> Quart:
             "active_user_email": user_email,
             "active_user_name": session.get("active_user_name"),
             "recommendations": sorted_recs,
+            "refresh_in_progress": bool(app._followup_in_progress.get(user_email)),
         }
         return await render_template("recommendations.html", **context)
 
@@ -349,8 +369,13 @@ def create_app() -> Quart:
 
         form = await request.form
         person = (form.get("person") or "").strip()
+        entry_type = (form.get("entry_type") or "conversation").strip().lower()
+        entry_type = (form.get("entry_type") or "").strip().lower() or None
         summary = (form.get("summary") or "").strip()
         errors = []
+
+        if entry_type not in {"conversation", "note"}:
+            errors.append("Please choose a valid entry type.")
 
         if not person:
             errors.append("Please specify who you spoke with.")
@@ -374,11 +399,123 @@ def create_app() -> Quart:
                 "recommendation": app.conversation_store.recommendation_for(user_email, person)
                 if person
                 else None,
+                "refresh_in_progress": bool(app._followup_in_progress.get(user_email)),
+                "new_entry_type": entry_type,
+                "draft_summary": summary,
                 "errors": tuple(errors),
             }
             return await render_template("index.html", **context), 400
 
-        app.conversation_store.add_entry(user_email, person, summary)
+        app.conversation_store.add_entry(user_email, person, summary, entry_type)
         return redirect(url_for("conversations", person=person))
+
+    @app.get("/conversations/edit")
+    async def edit_entry() -> str:
+        user_email = session.get("active_user_email")
+        if not user_email:
+            return redirect(url_for("landing"))
+
+        person = request.args.get("person") or ""
+        entry_id = request.args.get("entry") or ""
+
+        entry = (
+            app.conversation_store.get_entry(user_email, person, entry_id)
+            if person and entry_id
+            else None
+        )
+
+        errors: Tuple[str, ...] = ()
+        if not entry:
+            errors = ("Conversation entry not found.",)
+
+        context = {
+            "active_user_email": user_email,
+            "active_user_name": session.get("active_user_name"),
+            "person": person,
+            "entry": entry,
+            "errors": errors,
+        }
+        status = 404 if errors else 200
+        return await render_template("edit_entry.html", **context), status
+
+    @app.post("/conversations/edit")
+    async def update_entry() -> str:
+        user_email = session.get("active_user_email")
+        if not user_email:
+            return redirect(url_for("landing"))
+
+        form = await request.form
+        person = (form.get("person") or "").strip()
+        entry_id = (form.get("entry_id") or "").strip()
+        summary = (form.get("summary") or "").strip()
+
+        errors = []
+        entry = None
+        if not person or not entry_id:
+            errors.append("Missing conversation reference.")
+        else:
+            entry = app.conversation_store.get_entry(user_email, person, entry_id)
+            if not entry:
+                errors.append("Conversation entry not found.")
+
+        if entry_type and entry_type not in {"conversation", "note"}:
+            errors.append("Please choose a valid entry type.")
+
+        if not summary:
+            errors.append("Please provide an updated summary.")
+
+        if errors:
+            context = {
+                "active_user_email": user_email,
+                "active_user_name": session.get("active_user_name"),
+                "person": person,
+                "entry": entry,
+                "provided_entry_type": entry_type or (entry.entry_type if entry else None),
+                "draft_summary": summary,
+                "errors": tuple(errors),
+            }
+            status = 404 if any("not found" in error.lower() for error in errors) else 400
+            return await render_template("edit_entry.html", **context), status
+
+        updated = app.conversation_store.update_entry(user_email, person, entry_id, summary, entry_type)
+        if not updated:
+            context = {
+                "active_user_email": user_email,
+                "active_user_name": session.get("active_user_name"),
+                "person": person,
+                "entry": entry,
+                "provided_entry_type": entry_type or (entry.entry_type if entry else None),
+                "draft_summary": summary,
+                "errors": ("Unable to update this conversation entry.",),
+            }
+            return await render_template("edit_entry.html", **context), 400
+
+        return redirect(url_for("conversations", person=person))
+
+    @app.post("/conversations/delete")
+    async def delete_entry() -> str:
+        user_email = session.get("active_user_email")
+        if not user_email:
+            return redirect(url_for("landing"))
+
+        form = await request.form
+        person = (form.get("person") or "").strip()
+        entry_id = (form.get("entry_id") or "").strip()
+
+        if person and entry_id:
+            removed = app.conversation_store.delete_entry(user_email, person, entry_id)
+            if removed:
+                return redirect(url_for("conversations", person=person))
+
+        context = {
+            "active_user_email": user_email,
+            "active_user_name": session.get("active_user_name"),
+            "person": person,
+            "entry": app.conversation_store.get_entry(user_email, person, entry_id)
+            if (person and entry_id)
+            else None,
+            "errors": ("Unable to delete the requested conversation entry.",),
+        }
+        return await render_template("edit_entry.html", **context), 400
 
     return app

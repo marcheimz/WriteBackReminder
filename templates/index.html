@@ -16,6 +16,7 @@
       .actions form { margin: 0; }
       .recommendations-link { padding: 0.45rem 0.9rem; border: 1px solid #333; border-radius: 4px; text-decoration: none; color: #333; }
       .recommendations-link:hover { background: #333; color: #fff; }
+      .loading-button { min-width: 9.5rem; }
       .errors { background: #ffefef; border: 1px solid #cc4444; color: #842222; padding: 0.75rem; margin-bottom: 1rem; }
       .recommendation { border: 1px solid #4a7ebb; background: #eef4ff; padding: 1rem; border-radius: 4px; margin: 1.5rem 0; }
       .recommendation h2 { margin-top: 0; }
@@ -23,13 +24,18 @@
       .recommendation .generated { font-size: 0.9rem; color: #555; }
       .history { border-top: 1px solid #ddd; padding-top: 1rem; }
       .history-entry { border: 1px solid #ccc; padding: 0.75rem; margin-bottom: 0.75rem; border-radius: 4px; }
+      .history-entry.note { background: #fff9e8; border-color: #e0b354; }
       .history-entry time { display: block; font-size: 0.85rem; color: #666; margin-bottom: 0.35rem; }
+      .entry-actions { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
+      .entry-actions form { margin: 0; }
+      .entry-actions a, .entry-actions button { font-size: 0.85rem; padding: 0.3rem 0.6rem; border-radius: 4px; border: 1px solid #444; background: #fff; color: #333; text-decoration: none; cursor: pointer; }
+      .entry-actions a:hover, .entry-actions button:hover { background: #333; color: #fff; }
       .people { margin-bottom: 1rem; }
       .people a { display: inline-block; margin: 0 0.5rem 0.5rem 0; padding: 0.35rem 0.65rem; border: 1px solid #666; border-radius: 4px; text-decoration: none; color: inherit; }
       .people a.active { background: #333; color: #fff; }
     </style>
   </head>
-  <body>
+  <body data-user-email="{{ active_user_email }}">
     <header>
       <div>
         <h1>WriteBackReminder</h1>
@@ -41,8 +47,17 @@
         </p>
       </div>
       <div class="actions">
-        <form method="post" action="{{ url_for('refresh_recommendations') }}">
-          <button type="submit">Refresh follow-ups</button>
+        {% set is_refreshing = refresh_in_progress|default(False) %}
+        <form method="post" action="{{ url_for('refresh_recommendations') }}" class="refresh-form">
+          <button
+            type="submit"
+            class="loading-button"
+            data-loading-label="Refreshing"
+            data-refreshing="{{ 'true' if is_refreshing else 'false' }}"
+            {% if is_refreshing %}disabled{% endif %}
+          >
+            {% if is_refreshing %}Refreshing ...{% else %}Refresh follow-ups{% endif %}
+          </button>
         </form>
         <a href="{{ url_for('recommendations_page') }}" class="recommendations-link">Follow-up suggestions</a>
         <form method="post" action="{{ url_for('logout') }}">
@@ -73,7 +88,7 @@
     </section>
 
     <section>
-      <form method="post" action="{{ url_for('log_conversation') }}">
+      <form method="post" action="{{ url_for('log_conversation') }}" id="log-form">
         <label for="person">Who did you speak with?</label>
         <input
           type="text"
@@ -91,8 +106,15 @@
           {% endfor %}
         </datalist>
 
-        <label for="summary">Conversation summary</label>
-        <textarea id="summary" name="summary" placeholder="What was discussed?" required></textarea>
+        <label for="entry-type">Entry type</label>
+        {% set selected_type = new_entry_type|default('conversation') %}
+        <select id="entry-type" name="entry_type">
+          <option value="conversation" {% if selected_type != 'note' %}selected{% endif %}>Conversation</option>
+          <option value="note" {% if selected_type == 'note' %}selected{% endif %}>Note</option>
+        </select>
+
+        <label for="summary">Details</label>
+        <textarea id="summary" name="summary" placeholder="What was discussed?" required>{{ draft_summary or '' }}</textarea>
 
         <button type="submit">Log conversation</button>
       </form>
@@ -113,9 +135,22 @@
       <h2>Conversation history with {{ selected_person }}</h2>
       {% if conversations %}
         {% for entry in conversations|reverse %}
-        <article class="history-entry">
+        {% set is_note = entry.entry_type == 'note' %}
+        <article class="history-entry {% if is_note %}note{% endif %}">
           <time datetime="{{ entry.timestamp.isoformat() }}">{{ entry.timestamp.strftime('%Y-%m-%d %H:%M UTC') }}</time>
+          {% if is_note %}
+          <p><strong>Note:</strong> {{ entry.summary }}</p>
+          {% else %}
           <p>{{ entry.summary }}</p>
+          {% endif %}
+          <div class="entry-actions">
+            <a href="{{ url_for('edit_entry', person=selected_person, entry=entry.id) }}">Edit</a>
+            <form method="post" action="{{ url_for('delete_entry') }}" onsubmit="return confirm('Delete this entry?');">
+              <input type="hidden" name="person" value="{{ selected_person }}" />
+              <input type="hidden" name="entry_id" value="{{ entry.id }}" />
+              <button type="submit">Delete</button>
+            </form>
+          </div>
         </article>
         {% endfor %}
       {% else %}
@@ -123,5 +158,119 @@
       {% endif %}
     </section>
     {% endif %}
+    <script>
+      document.addEventListener('DOMContentLoaded', () => {
+        const body = document.body;
+        const userEmail = body.dataset.userEmail;
+
+        const logForm = document.getElementById('log-form');
+        if (logForm) {
+          const typeSelect = logForm.querySelector('#entry-type');
+          const summaryField = logForm.querySelector('#summary');
+          if (typeSelect && summaryField) {
+            const placeholders = {
+              conversation: 'What was discussed?',
+              note: 'What do you want to remember or plan?'
+            };
+            const updatePlaceholder = () => {
+              const key = (typeSelect.value || 'conversation').toLowerCase();
+              summaryField.placeholder = placeholders[key] || placeholders.conversation;
+            };
+            updatePlaceholder();
+            typeSelect.addEventListener('change', updatePlaceholder);
+          }
+        }
+
+        if (!userEmail) {
+          return;
+        }
+
+        const storageKey = `wbr-refresh-${userEmail}`;
+        const intervals = new WeakMap();
+        const frames = ['.', '..', '...'];
+
+        const startAnimation = (button) => {
+          if (intervals.has(button)) {
+            return;
+          }
+          const defaultLabel = button.dataset.defaultLabel || button.textContent.trim();
+          button.dataset.defaultLabel = defaultLabel;
+          const baseLabel = button.dataset.loadingLabel || 'Refreshing';
+          let frameIndex = 0;
+          const updateLabel = () => {
+            button.textContent = `${baseLabel} ${frames[frameIndex]}`;
+            frameIndex = (frameIndex + 1) % frames.length;
+          };
+          button.disabled = true;
+          button.dataset.animating = 'true';
+          button.dataset.refreshing = 'true';
+          updateLabel();
+          const intervalId = window.setInterval(updateLabel, 350);
+          intervals.set(button, intervalId);
+        };
+
+        const stopAnimation = (button) => {
+          if (intervals.has(button)) {
+            const id = intervals.get(button);
+            window.clearInterval(id);
+            intervals.delete(button);
+          }
+          const defaultLabel = button.dataset.defaultLabel || 'Refresh follow-ups';
+          button.textContent = defaultLabel;
+          button.disabled = false;
+          button.dataset.animating = '';
+          button.dataset.refreshing = 'false';
+        };
+
+        for (const form of document.querySelectorAll('.refresh-form')) {
+          if (form.dataset.bound === 'true') {
+            continue;
+          }
+          form.dataset.bound = 'true';
+
+          const button = form.querySelector('button');
+          if (!button) {
+            continue;
+          }
+
+          const applyStoredState = () => {
+            const pending = window.localStorage.getItem(storageKey) === 'pending';
+            if (button.dataset.refreshing === 'true' || pending) {
+              startAnimation(button);
+            } else {
+              stopAnimation(button);
+            }
+          };
+
+          if (button.dataset.refreshing !== 'true') {
+            const pending = window.localStorage.getItem(storageKey);
+            if (pending === 'pending') {
+              window.localStorage.removeItem(storageKey);
+            }
+          }
+
+          applyStoredState();
+
+          form.addEventListener('submit', (event) => {
+            if (button.dataset.animating === 'true') {
+              event.preventDefault();
+              return;
+            }
+            window.localStorage.setItem(storageKey, 'pending');
+            startAnimation(button);
+          });
+
+          window.addEventListener('storage', (event) => {
+            if (event.key === storageKey) {
+              applyStoredState();
+            }
+          });
+        }
+
+        if (window.performance && window.performance.getEntriesByType('navigation')[0]?.type === 'reload') {
+          window.localStorage.removeItem(storageKey);
+        }
+      });
+    </script>
   </body>
 </html>

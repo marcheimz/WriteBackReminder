@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Edit Conversation Entry</title>
+    <style>
+      body { font-family: sans-serif; margin: 2rem auto; max-width: 640px; }
+      header { margin-bottom: 1.5rem; }
+      h1 { margin: 0 0 0.5rem 0; }
+      form { display: flex; flex-direction: column; gap: 1rem; }
+      label { font-weight: 600; }
+      textarea { width: 100%; min-height: 8rem; font-size: 1rem; padding: 0.5rem; }
+      button { padding: 0.5rem 1rem; font-size: 1rem; cursor: pointer; }
+      .actions { display: flex; gap: 1rem; align-items: center; margin-top: 1rem; }
+      .actions form { margin: 0; }
+      .button { border: 1px solid #333; padding: 0.45rem 0.9rem; border-radius: 4px; background: #fff; color: #333; text-decoration: none; cursor: pointer; }
+      .button:hover { background: #333; color: #fff; }
+      .errors { background: #ffefef; border: 1px solid #cc4444; color: #842222; padding: 0.75rem; margin-bottom: 1.5rem; }
+      .meta { color: #555; font-size: 0.95rem; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Edit conversation entry</h1>
+      <p class="meta">
+        Logged in as {{ active_user_name or active_user_email }}
+        {% if active_user_name and active_user_email and active_user_name != active_user_email %}
+        ({{ active_user_email }})
+        {% endif %}
+      </p>
+    </header>
+
+    {% if errors %}
+    <div class="errors">
+      <ul>
+        {% for error in errors %}
+        <li>{{ error }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+    {% if entry %}
+    <form method="post" action="{{ url_for('update_entry') }}" id="edit-entry-form">
+      <input type="hidden" name="person" value="{{ person }}" />
+      <input type="hidden" name="entry_id" value="{{ entry.id }}" />
+
+      <p class="meta">
+        Contact: <strong>{{ person }}</strong><br />
+        Logged at {{ entry.timestamp.strftime('%Y-%m-%d %H:%M UTC') }}
+      </p>
+
+      <label for="summary">Conversation summary</label>
+      {% set current_type = provided_entry_type or entry.entry_type %}
+      <label for="entry-type">Entry type</label>
+      <select id="entry-type" name="entry_type">
+        <option value="conversation" {% if current_type == 'conversation' %}selected{% endif %}>Conversation</option>
+        <option value="note" {% if current_type == 'note' %}selected{% endif %}>Note</option>
+      </select>
+
+      <label for="summary">Details</label>
+      <textarea id="summary" name="summary" required>{{ draft_summary if draft_summary is not none else entry.summary }}</textarea>
+
+      <div class="actions">
+        <button type="submit" class="button">Save changes</button>
+        <a class="button" href="{{ url_for('conversations', person=person) }}">Cancel</a>
+        <form method="post" action="{{ url_for('delete_entry') }}" onsubmit="return confirm('Delete this entry?');">
+          <input type="hidden" name="person" value="{{ person }}" />
+          <input type="hidden" name="entry_id" value="{{ entry.id }}" />
+          <button type="submit" class="button">Delete entry</button>
+        </form>
+      </div>
+    </form>
+    {% else %}
+    <p>The requested conversation entry could not be found. <a href="{{ url_for('conversations') }}">Back to conversations</a>.</p>
+    {% endif %}
+    <script>
+      document.addEventListener('DOMContentLoaded', () => {
+        const form = document.getElementById('edit-entry-form');
+        if (!form) {
+          return;
+        }
+        const typeSelect = form.querySelector('#entry-type');
+        const summaryField = form.querySelector('#summary');
+        if (!typeSelect || !summaryField) {
+          return;
+        }
+        const placeholders = {
+          conversation: 'What was discussed?',
+          note: 'What do you want to remember or plan?'
+        };
+        const updatePlaceholder = () => {
+          const key = (typeSelect.value || 'conversation').toLowerCase();
+          summaryField.placeholder = placeholders[key] || placeholders.conversation;
+        };
+        updatePlaceholder();
+        typeSelect.addEventListener('change', updatePlaceholder);
+      });
+    </script>
+  </body>
+</html>

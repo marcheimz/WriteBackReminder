@@ -20,9 +20,10 @@
       .link { border: 1px solid #333; color: #333; }
       .link:hover { background: #333; color: #fff; }
       button { border: none; cursor: pointer; }
+      .loading-button { min-width: 9.5rem; }
     </style>
   </head>
-  <body>
+  <body data-user-email="{{ active_user_email }}">
     <header>
       <div>
         <h1>Follow-up suggestions</h1>
@@ -34,8 +35,17 @@
         </p>
       </div>
       <div class="actions">
-        <form method="post" action="{{ url_for('refresh_recommendations') }}">
-          <button type="submit">Refresh follow-ups</button>
+        {% set is_refreshing = refresh_in_progress|default(False) %}
+        <form method="post" action="{{ url_for('refresh_recommendations') }}" class="refresh-form">
+          <button
+            type="submit"
+            class="loading-button"
+            data-loading-label="Refreshing"
+            data-refreshing="{{ 'true' if is_refreshing else 'false' }}"
+            {% if is_refreshing %}disabled{% endif %}
+          >
+            {% if is_refreshing %}Refreshing ...{% else %}Refresh follow-ups{% endif %}
+          </button>
         </form>
         <a href="{{ url_for('conversations') }}" class="link">Back to conversations</a>
         <form method="post" action="{{ url_for('logout') }}">
@@ -71,5 +81,100 @@
     {% else %}
     <p>No follow-up suggestions generated yet. Log conversations to see recommendations here.</p>
     {% endif %}
+    <script>
+      document.addEventListener('DOMContentLoaded', () => {
+        const body = document.body;
+        const userEmail = body.dataset.userEmail;
+        if (!userEmail) {
+          return;
+        }
+
+        const storageKey = `wbr-refresh-${userEmail}`;
+        const intervals = new WeakMap();
+        const frames = ['.', '..', '...'];
+
+        const startAnimation = (button) => {
+          if (intervals.has(button)) {
+            return;
+          }
+          const defaultLabel = button.dataset.defaultLabel || button.textContent.trim();
+          button.dataset.defaultLabel = defaultLabel;
+          const baseLabel = button.dataset.loadingLabel || 'Refreshing';
+          let frameIndex = 0;
+          const updateLabel = () => {
+            button.textContent = `${baseLabel} ${frames[frameIndex]}`;
+            frameIndex = (frameIndex + 1) % frames.length;
+          };
+          button.disabled = true;
+          button.dataset.animating = 'true';
+          button.dataset.refreshing = 'true';
+          updateLabel();
+          const intervalId = window.setInterval(updateLabel, 350);
+          intervals.set(button, intervalId);
+        };
+
+        const stopAnimation = (button) => {
+          if (intervals.has(button)) {
+            const id = intervals.get(button);
+            window.clearInterval(id);
+            intervals.delete(button);
+          }
+          const defaultLabel = button.dataset.defaultLabel || 'Refresh follow-ups';
+          button.textContent = defaultLabel;
+          button.disabled = false;
+          button.dataset.animating = '';
+          button.dataset.refreshing = 'false';
+        };
+
+        for (const form of document.querySelectorAll('.refresh-form')) {
+          if (form.dataset.bound === 'true') {
+            continue;
+          }
+          form.dataset.bound = 'true';
+
+          const button = form.querySelector('button');
+          if (!button) {
+            continue;
+          }
+
+          const applyStoredState = () => {
+            const pending = window.localStorage.getItem(storageKey) === 'pending';
+            if (button.dataset.refreshing === 'true' || pending) {
+              startAnimation(button);
+            } else {
+              stopAnimation(button);
+            }
+          };
+
+          if (button.dataset.refreshing !== 'true') {
+            const pending = window.localStorage.getItem(storageKey);
+            if (pending === 'pending') {
+              window.localStorage.removeItem(storageKey);
+            }
+          }
+
+          applyStoredState();
+
+          form.addEventListener('submit', (event) => {
+            if (button.dataset.animating === 'true') {
+              event.preventDefault();
+              return;
+            }
+            window.localStorage.setItem(storageKey, 'pending');
+            startAnimation(button);
+          });
+
+          window.addEventListener('storage', (event) => {
+            if (event.key === storageKey) {
+              applyStoredState();
+            }
+          });
+        }
+
+        if (window.performance && window.performance.getEntriesByType('navigation')[0]?.type === 'reload') {
+          window.localStorage.removeItem(storageKey);
+        }
+      });
+    </script>
   </body>
 </html>

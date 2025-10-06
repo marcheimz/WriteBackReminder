@@ -11,6 +11,7 @@ from .config import get_config
 
 
 DEFAULT_MODEL = "gpt-4o-2024-08-06"
+HistoryItem = Tuple[datetime, str, str]
 
 
 class FollowupRecommendation(BaseModel):
@@ -30,7 +31,7 @@ def load_api_key() -> Optional[str]:
 def generate_followup(
     email: str,
     person: str,
-    history: Iterable[Tuple[datetime, str]],
+    history: Iterable[HistoryItem],
     *,
     model: Optional[str] = None,
     current_time: Optional[datetime] = None,
@@ -58,7 +59,7 @@ def generate_followup(
             {
                 "role": "system",
                 "content": (
-                    "You craft concise follow-up messages and assess urgency."
+                    "You craft concise follow-up messages and assess urgency. Consider the time difference, too early responses might not be a good idea, while a friendly follow up after no response after a while can make sense. Do not consider the timezone at all, this is left to the user."
                     " Return JSON matching the provided schema."
                 ),
             },
@@ -84,9 +85,9 @@ def generate_followup(
     return recommendation
 
 
-def _format_history(history: Iterable[Tuple[datetime, str]]) -> Sequence[str]:
+def _format_history(history: Iterable[HistoryItem]) -> Sequence[str]:
     lines = []
-    for timestamp, summary in history:
+    for timestamp, entry_type, summary in history:
         if not summary:
             continue
         if isinstance(timestamp, datetime):
@@ -95,5 +96,6 @@ def _format_history(history: Iterable[Tuple[datetime, str]]) -> Sequence[str]:
             continue
         if ts.tzinfo is None:
             ts = ts.replace(tzinfo=timezone.utc)
-        lines.append(f"{ts.isoformat()} - {summary.strip()}")
+        label = "NOTE" if entry_type == "note" else "CONVERSATION"
+        lines.append(f"{ts.isoformat()} [{label}] {summary.strip()}")
     return lines

@@ -10,11 +10,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import DefaultDict, Dict, Iterable, List, Optional
 
+from uuid import uuid4
+
 
 @dataclass
 class ConversationEntry:
-    """Single conversation summary captured from the UI."""
+    """Single conversation or note captured from the UI."""
 
+    id: str
+    entry_type: str
     summary: str
     timestamp: datetime
 
@@ -55,9 +59,14 @@ class ConversationStore:
         self._load_existing()
         self._load_existing_recommendations()
 
-    def add_entry(self, user: str, person: str, summary: str) -> ConversationEntry:
-        """Append a new conversation summary for the given pair and persist the change."""
-        entry = ConversationEntry(summary=summary.strip(), timestamp=datetime.now(timezone.utc))
+    def add_entry(self, user: str, person: str, summary: str, entry_type: str) -> ConversationEntry:
+        """Append a new conversation summary or note for the given pair and persist it."""
+        entry = ConversationEntry(
+            id=uuid4().hex,
+            entry_type=entry_type,
+            summary=summary.strip(),
+            timestamp=datetime.now(timezone.utc),
+        )
         with self._lock:
             user_data = self._ensure_user(user)
             user_data.conversations[person].append(entry)
@@ -118,6 +127,65 @@ class ConversationStore:
         with self._lock:
             return sorted(self._data.keys())
 
+    def get_entry(self, user: str, person: str, entry_id: str) -> Optional[ConversationEntry]:
+        """Return a single conversation entry by ID."""
+        with self._lock:
+            user_data = self._data.get(user)
+            if not user_data:
+                return None
+            for entry in user_data.conversations.get(person, ()):  # type: ignore[arg-type]
+                if entry.id == entry_id:
+                    return entry
+        return None
+
+    def update_entry(
+        self,
+        user: str,
+        person: str,
+        entry_id: str,
+        summary: str,
+        entry_type: Optional[str] = None,
+    ) -> bool:
+        """Update the summary (and optionally type) of an existing entry."""
+        summary = summary.strip()
+        with self._lock:
+            user_data = self._data.get(user)
+            if not user_data:
+                return False
+            entries = user_data.conversations.get(person)
+            if not entries:
+                return False
+            for entry in entries:
+                if entry.id == entry_id:
+                    entry.summary = summary
+                    if entry_type:
+                        entry.entry_type = entry_type
+                    user_data.recommendations.pop(person, None)
+                    self._persist_user(user)
+                    return True
+        return False
+
+    def delete_entry(self, user: str, person: str, entry_id: str) -> bool:
+        """Remove an entry from the log."""
+        with self._lock:
+            user_data = self._data.get(user)
+            if not user_data:
+                return False
+            entries = user_data.conversations.get(person)
+            if not entries:
+                return False
+            for index, entry in enumerate(entries):
+                if entry.id == entry_id:
+                    entries.pop(index)
+                    if not entries:
+                        user_data.conversations.pop(person, None)
+                        user_data.recommendations.pop(person, None)
+                    else:
+                        user_data.recommendations.pop(person, None)
+                    self._persist_user(user)
+                    return True
+        return False
+
     def _load_existing(self) -> None:
         """Populate in-memory state from any persisted files."""
         for path in sorted(self._root.glob("*.json")):
@@ -141,11 +209,13 @@ class ConversationStore:
                     continue
 
                 person_bucket = user_bucket[person]
+                dirty = False
                 for entry in entries:
                     if not isinstance(entry, dict):
                         continue
                     summary = entry.get("summary")
                     timestamp_raw = entry.get("timestamp")
+                    entry_id = entry.get("id")
                     if not isinstance(summary, str) or not isinstance(timestamp_raw, str):
                         continue
                     try:
@@ -154,7 +224,24 @@ class ConversationStore:
                         continue
                     if timestamp.tzinfo is None:
                         timestamp = timestamp.replace(tzinfo=timezone.utc)
-                    person_bucket.append(ConversationEntry(summary=summary, timestamp=timestamp))
+                    if not isinstance(entry_id, str) or not entry_id:
+                        entry_id = uuid4().hex
+                        dirty = True
+                    entry_type = entry.get("entry_type")
+                    if not isinstance(entry_type, str) or entry_type not in {"conversation", "note"}:
+                        entry_type = "conversation"
+                        dirty = True
+                    person_bucket.append(
+                        ConversationEntry(
+                            id=entry_id,
+                            entry_type=entry_type,
+                            summary=summary,
+                            timestamp=timestamp,
+                        )
+                    )
+
+                if dirty:
+                    self._persist_user(user)
 
             self._user_files[user] = path
 
@@ -184,7 +271,12 @@ class ConversationStore:
             "user": user,
             "conversations": {
                 person: [
-                    {"summary": entry.summary, "timestamp": entry.timestamp.isoformat()}
+                    {
+                        "id": entry.id,
+                        "entry_type": entry.entry_type,
+                        "summary": entry.summary,
+                        "timestamp": entry.timestamp.isoformat(),
+                    }
                     for entry in entries
                 ]
                 for person, entries in conversations.items()

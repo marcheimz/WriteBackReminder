@@ -18,7 +18,7 @@ def _user_file(email: str) -> Path:
     return config.user_data_dir / f"{token}.json"
 
 
-def _load_history(email: str, person: str) -> List[Tuple[datetime, str]]:
+def _load_history(email: str, person: str) -> List[Tuple[datetime, str, str]]:
     path = _user_file(email)
     if not path.is_file():
         return []
@@ -30,19 +30,22 @@ def _load_history(email: str, person: str) -> List[Tuple[datetime, str]]:
 
     conversations = payload.get("conversations", {})
     entries = conversations.get(person, []) if isinstance(conversations, dict) else []
-    history: List[Tuple[datetime, str]] = []
+    history: List[Tuple[datetime, str, str]] = []
     for entry in entries:
         if not isinstance(entry, dict):
             continue
         summary = entry.get("summary")
         timestamp_raw = entry.get("timestamp")
+        entry_type = entry.get("entry_type")
         if not isinstance(summary, str) or not isinstance(timestamp_raw, str):
             continue
         try:
             timestamp = datetime.fromisoformat(timestamp_raw)
         except ValueError:
             continue
-        history.append((timestamp, summary))
+        if not isinstance(entry_type, str) or entry_type not in {"conversation", "note"}:
+            entry_type = "conversation"
+        history.append((timestamp, entry_type, summary))
     return history
 
 
