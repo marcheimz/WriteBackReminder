@@ -31,9 +31,11 @@
     {% endif %}
 
     {% if google_login_enabled %}
-    <form method="get" action="{{ url_for('login_google') }}" class="google">
-      <button type="submit">Sign in with Google</button>
-    </form>
+    <p>
+      <a href="{{ url_for('login_google') }}" class="google" style="text-decoration:none;">
+        <button type="button">Sign in with Google</button>
+      </a>
+    </p>
     {% else %}
     <p>Google sign-in is not configured for this deployment.</p>
     {% endif %}

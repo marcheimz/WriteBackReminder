@@ -8,6 +8,7 @@ import secrets
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import os
 from typing import Dict, Iterable, Optional, Tuple
 from urllib.parse import urlencode
 
@@ -15,6 +16,7 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from starlette.templating import Jinja2Templates
 from starlette.routing import NoMatchFound
 from jinja2 import pass_context
@@ -30,6 +32,11 @@ GOOGLE_USERINFO_ENDPOINT = "https://openidconnect.googleapis.com/v1/userinfo"
 
 def _load_google_credentials(credentials_path: Path) -> Tuple[Optional[str], Optional[str]]:
     """Return Google OAuth client credentials loaded from JSON if available."""
+    # Highest precedence: environment variables (for container/runtime secrets)
+    env_client_id = os.getenv("GOOGLE_CLIENT_ID")
+    env_client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
+    if env_client_id and env_client_secret:
+        return env_client_id, env_client_secret
 
     if not credentials_path.is_file():
         return None, None
@@ -55,6 +62,9 @@ def create_app() -> FastAPI:
 
     app = FastAPI()
 
+    # Respect X-Forwarded-Proto/For from Fly's proxy so generated URLs use https
+    app.add_middleware(ProxyHeadersMiddleware)
+
     # Sessions for login state (use distinct cookie name to avoid clashes)
     app.add_middleware(
         SessionMiddleware,
@@ -68,17 +78,17 @@ def create_app() -> FastAPI:
     @pass_context
     def _jinja_url_for(context, name: str, **params) -> str:
         request: Request = context["request"]
+        # Prefer path-only URLs to avoid scheme/host issues behind proxies
         try:
-            # Try treating params as path params (Starlette default)
-            return str(request.url_for(name, **params))
+            base = request.app.url_path_for(name)
         except NoMatchFound:
-            # Fallback: build base URL and append params as query string
-            base = str(request.url_for(name))
-            if params:
-                qs = urlencode(params, doseq=True)
-                sep = "&" if ("?" in base) else "?"
-                return f"{base}{sep}{qs}"
-            return base
+            # Fall back to root if route is missing
+            base = "/"
+        if params:
+            qs = urlencode(params, doseq=True)
+            sep = "&" if ("?" in base) else "?"
+            return f"{base}{sep}{qs}"
+        return base
 
     # Override default to also handle query parameters
     templates.env.globals["url_for"] = _jinja_url_for

@@ -74,3 +74,55 @@ You can also generate a suggestion from the command line for testing:
 ```bash
 python ai_followup.py you@example.com "Contact Name"
 ```
+
+## Environment variables
+
+All configuration values can be provided via environment variables (useful for containers and Fly.io). When set, env vars take precedence over `secrets/config.json`.
+
+- `SECRET_KEY` — session signing key. Set a strong random string in production.
+- `OPENAI_API_KEY` — enables AI follow-up generation.
+- `FOLLOWUP_REFRESH_HOURS` — hours between background refreshes (float, `0` disables interval and refreshes on demand).
+- `FOLLOWUP_MODEL` — OpenAI model identifier (defaults to `gpt-4o-2024-08-06`).
+- `USER_DATA_DIR` — directory for user data (defaults to `userdata`).
+- `RECOMMENDATIONS_DIR` — directory for AI recommendations (defaults to `userdata/recommendations`).
+- `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — if set, Google Sign-In uses these directly.
+- `GOOGLE_CREDENTIALS_PATH` — path to a JSON file with `{ "client_id": ..., "client_secret": ... }` (used when the above vars are not set; defaults to `secrets/google_oauth.json`).
+
+Google OAuth redirect URI
+
+- Local: `http://127.0.0.1:8000/auth/google`
+- Fly.io: `https://YOUR-APP.fly.dev/auth/google`
+
+## Deploy to Fly.io
+
+This repo includes a `Dockerfile` and a baseline `fly.toml`. After installing `flyctl`:
+
+1. Create the app (one-time):
+   ```bash
+   fly launch --no-deploy
+   ```
+2. Set secrets (required):
+   ```bash
+   fly secrets set \
+     SECRET_KEY='replace-with-strong-random' \
+     OPENAI_API_KEY='sk-...' \
+     GOOGLE_CLIENT_ID='...' \
+     GOOGLE_CLIENT_SECRET='...'
+   ```
+   Optional:
+   ```bash
+   fly secrets set FOLLOWUP_REFRESH_HOURS='24' FOLLOWUP_MODEL='gpt-4o-2024-08-06'
+   ```
+3. (Recommended) Persist data using a volume:
+   ```bash
+   fly volumes create wbr_data --size 1 --region <your-region>
+   ```
+   `fly.toml` is preconfigured to mount the volume at `/data` and to store
+   data under `/data/userdata` and `/data/userdata/recommendations`. You can
+   override these with env or secrets if needed.
+4. Deploy:
+   ```bash
+   fly deploy
+   ```
+
+The container listens on port `8080` internally; Fly serves HTTPS externally. Update your Google OAuth redirect URI to the Fly URL shown after launch.

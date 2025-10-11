@@ -1,0 +1,8 @@
+# flyctl launch added from .gitignore
+**/google_oauth.json
+**/secrets
+**/userdata
+**/__pycache__
+**/**/__pycache__
+**/.venv
+fly.toml
