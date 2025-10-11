@@ -3,3 +3,4 @@ secrets/
 userdata/
 __pycache__/
 **/__pycache__/
+.venv/

@@ -1,6 +1,6 @@
 # WriteBackReminder
 
-Simple Quart-based web app for logging conversations and planning reminders.
+Simple FastAPI-based web app for logging conversations and planning reminders.
 
 ## Setup
 
@@ -23,10 +23,10 @@ Edit `secrets/config.json` to match your local setup. Every tunable value (secre
 
 ## Running the server
 
-With the environment activated, start the development server with Quart:
+With the environment activated, start the development server with Uvicorn (FastAPI):
 
 ```bash
-quart --app main:app run --reload
+uvicorn main:app --reload
 ```
 
 Alternatively, you can launch it directly via Python:
@@ -35,7 +35,7 @@ Alternatively, you can launch it directly via Python:
 python main.py
 ```
 
-The app listens on `http://127.0.0.1:5000/` by default.
+The app listens on `http://127.0.0.1:8000/` by default.
 
 ## Usage
 
@@ -49,7 +49,7 @@ The app listens on `http://127.0.0.1:5000/` by default.
 Google OAuth is optional and only enabled when client credentials are available.
 
 1. Create an OAuth 2.0 Web Application credential in the [Google Cloud Console](https://console.cloud.google.com/).
-2. Set the authorized redirect URI to `http://127.0.0.1:5000/auth/google` (match your deployment host/port).
+2. Set the authorized redirect URI to `http://127.0.0.1:8000/auth/google` (match your deployment host/port).
 3. Save the client credentials to the path referenced by `google_credentials_path` in `secrets/config.json` (defaults to `secrets/google_oauth.json`). The file must look like:
    ```json
    {
@@ -57,7 +57,7 @@ Google OAuth is optional and only enabled when client credentials are available.
      "client_secret": "your-client-secret"
    }
    ```
-4. Restart the Quart app. When the file is present, the landing page will offer a **Sign in with Google** button and any Google account can sign in.
+4. Restart the app. When the file is present, the landing page will offer a **Sign in with Google** button and any Google account can sign in.
 
 ## AI follow-up suggestions
 

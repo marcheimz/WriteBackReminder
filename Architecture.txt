@@ -1,6 +1,6 @@
 We need the following:
 
-- a quart webserver.
+- a FastAPI webserver.
 
 Functionality to have different selected users (hard coded list for now).
 
@@ -13,20 +13,19 @@ This will then be stored in some simple database key(user, person_that_user_talk
 
 From time to time a script (this should be specifyable) is run and all of the recent conversations are fed into an LLM and the llm makes suggestions on what the user should do next. It should assign an urgency of how important a response right now is.
 
-I want for now a simple webapp that mostly uses forms that communicates with a python backedn (Quart)
+I want for now a simple webapp that mostly uses forms that communicates with a python backend (FastAPI)
 
 use the venv38
 
 
 Actual implementation:
 
-- `writebackreminder/app.py` exposes a Quart application factory with routes for logging in (`/`, `/login`, `/login/google`, `/auth/google`, `/logout`) and managing conversations (`/conversations`, `/log`). The selected user is stored in the session for the duration of the visit.
-- Google OAuth sign-in is optional. Client credentials are read from `google_oauth.json` in the project root by default (override with `GOOGLE_CREDENTIALS_FILE`). The app performs the OAuth flow directly against Google endpoints using `httpx`, then maps verified emails to hard-coded users through `GOOGLE_EMAIL_TO_USER`.
-- The app maintains an in-memory `ConversationStore` (`writebackreminder/datastore.py`) that stores timestamped summaries keyed by `(user, person)`.
-- Available users are currently hard-coded to `alice`, `bob`, and `carol` and selectable from the landing page dropdown.
+- `writebackreminder/app.py` exposes a FastAPI application factory with routes for logging in (`/`, `/login/google`, `/auth/google`, `/logout`) and managing conversations (`/conversations`, `/log`). The selected user is stored in a session (Starlette `SessionMiddleware`).
+- Google OAuth sign-in is optional. Client credentials are read from `secrets/google_oauth.json` (path configured in `secrets/config.json`). The app performs the OAuth flow directly against Google endpoints using `httpx`.
+- The app persists data via `ConversationStore` (`writebackreminder/datastore.py`) using JSON files under `userdata/` and `userdata/recommendations/`.
 - Conversation logging validates required fields, records entries, and redirects back to the history view for the chosen person.
-- `templates/login.html` renders the landing/login page (manual and Google sign-in), while `templates/index.html` provides the form-driven dashboard with known contacts and conversation history.
-- `main.py` instantiates the Quart app for local development, and `requirements.txt` pins the Quart + httpx dependencies for installation inside `.venv38`.
+- `templates/login.html` renders the landing/login page (Google sign-in). `templates/index.html` provides the dashboard for known contacts and history. `templates/recommendations.html` lists suggested follow-ups. `templates/edit_entry.html` edits existing entries.
+- `main.py` runs the FastAPI app with `uvicorn` for local development. `requirements.txt` pins FastAPI, Uvicorn, httpx, Jinja2, OpenAI, and Pydantic.
 
 Next steps:
 
