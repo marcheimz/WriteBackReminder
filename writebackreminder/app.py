@@ -31,27 +31,12 @@ GOOGLE_USERINFO_ENDPOINT = "https://openidconnect.googleapis.com/v1/userinfo"
 
 
 def _load_google_credentials(credentials_path: Path) -> Tuple[Optional[str], Optional[str]]:
-    """Return Google OAuth client credentials loaded from JSON if available."""
-    # Highest precedence: environment variables (for container/runtime secrets)
+    """Return Google OAuth client credentials from environment variables only."""
     env_client_id = os.getenv("GOOGLE_CLIENT_ID")
     env_client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
     if env_client_id and env_client_secret:
         return env_client_id, env_client_secret
-
-    if not credentials_path.is_file():
-        return None, None
-
-    try:
-        payload = json.loads(credentials_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None, None
-
-    client_id = payload.get("client_id")
-    client_secret = payload.get("client_secret")
-    if not client_id or not client_secret:
-        return None, None
-
-    return str(client_id), str(client_secret)
+    return None, None
 
 
 def create_app() -> FastAPI:
@@ -99,7 +84,6 @@ def create_app() -> FastAPI:
     # Storage and config state
     user_data_dir = app_config.user_data_dir
     recommendation_data_dir = app_config.recommendations_dir
-    app_config.google_credentials_path.parent.mkdir(parents=True, exist_ok=True)
     user_data_dir.mkdir(parents=True, exist_ok=True)
     recommendation_data_dir.mkdir(parents=True, exist_ok=True)
 

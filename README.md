@@ -12,14 +12,20 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Secrets and API credentials live under `secrets/`, which is ignored by Git. Create it once and seed the configuration file:
+Configuration is now env-only (no JSON file is read at runtime). Use the helper script to migrate values from `secrets/config.json` into environment variables.
+
+Env setup helper:
 
 ```bash
-mkdir -p secrets
-cp config.example.json secrets/config.json
-```
+# Print shell exports (local)
+python scripts/configure_env.py --from-json secrets/config.json --use-s3 true local
 
-Edit `secrets/config.json` to match your local setup. Every tunable value (secret key, data directories, Google OAuth credentials path, OpenAI model, refresh cadence, and the OpenAI key itself) is read from this file at startup.
+# Or write a .env file
+python scripts/configure_env.py --from-json secrets/config.json --use-s3 true local --dotenv .env
+
+# Set Fly secrets (reads app name from fly.toml if --app omitted)
+python scripts/configure_env.py --from-json secrets/config.json --use-s3 true fly --app writebackreminder
+```
 
 ## Running the server
 
@@ -50,21 +56,15 @@ Google OAuth is optional and only enabled when client credentials are available.
 
 1. Create an OAuth 2.0 Web Application credential in the [Google Cloud Console](https://console.cloud.google.com/).
 2. Set the authorized redirect URI to `http://127.0.0.1:8000/auth/google` (match your deployment host/port).
-3. Save the client credentials to the path referenced by `google_credentials_path` in `secrets/config.json` (defaults to `secrets/google_oauth.json`). The file must look like:
-   ```json
-   {
-     "client_id": "your-client-id.apps.googleusercontent.com",
-     "client_secret": "your-client-secret"
-   }
-   ```
-4. Restart the app. When the file is present, the landing page will offer a **Sign in with Google** button and any Google account can sign in.
+3. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` as environment variables (or use the helper script above to migrate from a JSON file).
+4. Restart the app. When the env vars are present, the landing page will offer a **Sign in with Google** button.
 
 ## AI follow-up suggestions
 
 The app can call OpenAI to propose follow-up messages and urgency scores for each contact.
 
-1. Add the key to `openai_api_key` inside `secrets/config.json`.
-2. Start the app. Whenever a user logs in, the server will refresh recommendations in the background.
+1. Set `OPENAI_API_KEY` in your environment (or via Fly secrets).
+2. Start the app. Whenever a user logs in, the server refreshes recommendations in the background.
    - Configure the refresh cadence via `followup_refresh_hours` (set to `0` to force regeneration on each visit).
    - Change the model with `followup_model`.
 3. Recommendations are stored separately from conversation history under `userdata/recommendations/`.
@@ -88,6 +88,20 @@ All configuration values can be provided via environment variables (useful for c
 - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — if set, Google Sign-In uses these directly.
 - `GOOGLE_CREDENTIALS_PATH` — path to a JSON file with `{ "client_id": ..., "client_secret": ... }` (used when the above vars are not set; defaults to `secrets/google_oauth.json`).
 
+Optional S3/Tigris storage (multi-region friendly)
+
+- `USE_S3` — set to `true` to enable S3-backed storage with local read-through caching and write-back sync.
+- `BUCKET_NAME` — S3/Tigris bucket name (Fly sets this for Tigris).
+- `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` — access keys (Fly sets for Tigris).
+- `AWS_ENDPOINT_URL_S3` — endpoint URL (Fly sets for Tigris).
+- `AWS_REGION` — region or `auto` for Tigris.
+- `S3_PREFIX` — optional prefix within the bucket (default: `writebackreminder`).
+
+Behavior when `USE_S3=true`:
+- On first access to a user, the app will try to download that user's conversation JSON from S3 into the local volume (read‑through cache).
+- On every write, it persists locally and uploads the updated conversation history back to S3 (write‑back). AI recommendations stay local-only.
+- Local volume still provides fast reads and survives restarts; S3 enables multi‑region serving and centralized storage.
+
 Google OAuth redirect URI
 
 - Local: `http://127.0.0.1:8000/auth/google`
@@ -101,18 +115,15 @@ This repo includes a `Dockerfile` and a baseline `fly.toml`. After installing `f
    ```bash
    fly launch --no-deploy
    ```
-2. Set secrets (required):
+2. Set secrets using the helper script (it reads your JSON config and pushes the values to Fly):
    ```bash
-   fly secrets set \
-     SECRET_KEY='replace-with-strong-random' \
-     OPENAI_API_KEY='sk-...' \
-     GOOGLE_CLIENT_ID='...' \
-     GOOGLE_CLIENT_SECRET='...'
+   python scripts/configure_env.py \
+     --from-json secrets/config.json \
+     --use-s3 true \
+     fly --app writebackreminder
    ```
-   Optional:
-   ```bash
-   fly secrets set FOLLOWUP_REFRESH_HOURS='24' FOLLOWUP_MODEL='gpt-4o-2024-08-06'
-   ```
+   Adjust the paths/flags to match your environment. Use `--dry-run` first if you just want to inspect the generated `fly secrets set` command.
+   To override or append individual secrets manually, run `fly secrets set KEY=value` afterwards.
 3. (Recommended) Persist data using a volume:
    ```bash
    fly volumes create wbr_data --size 1 --region <your-region>

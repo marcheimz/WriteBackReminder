@@ -8,9 +8,15 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+import logging
 from typing import DefaultDict, Dict, Iterable, List, Optional
 
 from uuid import uuid4
+
+try:
+    from . import s3_cache
+except Exception:  # pragma: no cover - optional
+    s3_cache = None  # type: ignore
 
 
 @dataclass
@@ -59,6 +65,9 @@ class ConversationStore:
         self._load_existing()
         self._load_existing_recommendations()
 
+        self._logger = logging.getLogger(__name__)
+        self._use_s3 = bool(getattr(s3_cache, "enabled", lambda: False)())
+
     def add_entry(self, user: str, person: str, summary: str, entry_type: str) -> ConversationEntry:
         """Append a new conversation summary or note for the given pair and persist it."""
         entry = ConversationEntry(
@@ -78,6 +87,7 @@ class ConversationStore:
     def people_for_user(self, user: str) -> List[str]:
         """Return known conversation partners for the user, sorted alphabetically."""
         with self._lock:
+            self._ensure_loaded(user)
             user_data = self._data.get(user)
             if not user_data:
                 return []
@@ -86,6 +96,7 @@ class ConversationStore:
     def conversations(self, user: str, person: str) -> Iterable[ConversationEntry]:
         """Iterate over the stored conversation entries for the pair."""
         with self._lock:
+            self._ensure_loaded(user)
             user_data = self._data.get(user)
             if not user_data:
                 return ()
@@ -102,6 +113,7 @@ class ConversationStore:
     def recommendation_for(self, user: str, person: str) -> Optional[RecommendationEntry]:
         """Return the stored recommendation for the user/person if available."""
         with self._lock:
+            self._ensure_loaded(user)
             user_data = self._data.get(user)
             if not user_data:
                 return None
@@ -291,6 +303,8 @@ class ConversationStore:
         finally:
             if tmp_path.exists():
                 tmp_path.unlink()
+        # Mirror to S3 if enabled
+        self._s3_upload_user(user)
 
     def _path_for_user(self, user: str) -> Path:
         existing = self._user_files.get(user)
@@ -369,6 +383,76 @@ class ConversationStore:
         finally:
             if tmp_path.exists():
                 tmp_path.unlink()
+    # Read-through cache: hydrate from S3 when a user is first accessed
+    def _ensure_loaded(self, user: str) -> None:
+        if user in self._data:
+            return
+        path = self._path_for_user(user)
+        rec_path = self._path_for_recommendations(user)
+        if not path.exists() and self._use_s3 and s3_cache is not None:
+            try:
+                key = s3_cache.key_for_conversations(user)
+                if s3_cache.download_if_exists(key, path):
+                    self._logger.debug("Hydrated conversations from S3 for user=%s", user)
+            except Exception as exc:  # noqa: BLE001
+                self._logger.warning("S3 hydrate conversations failed for user=%s: %s", user, exc)
+        # If files now exist, load freshly
+        if (path.exists() or rec_path.exists()) and user not in self._data:
+            # Load only this user by re-reading the files directly to minimize impact
+            try:
+                if path.exists():
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                    if isinstance(payload, dict) and payload.get("user") == user:
+                        self._user_files[user] = path
+                        # Minimal parse identical to _load_existing logic
+                        conversations = payload.get("conversations", {}) or {}
+                        user_data = self._ensure_user(user)
+                        for person, entries in conversations.items():
+                            if not isinstance(person, str) or not isinstance(entries, list):
+                                continue
+                            bucket = user_data.conversations[person]
+                            for entry in entries:
+                                if not isinstance(entry, dict):
+                                    continue
+                                summary = entry.get("summary")
+                                timestamp_raw = entry.get("timestamp")
+                                entry_id = entry.get("id") or uuid4().hex
+                                entry_type = entry.get("entry_type") or "conversation"
+                                if isinstance(summary, str) and isinstance(timestamp_raw, str):
+                                    try:
+                                        ts = datetime.fromisoformat(timestamp_raw)
+                                    except ValueError:  # noqa: PERF203
+                                        continue
+                                    if ts.tzinfo is None:
+                                        ts = ts.replace(tzinfo=timezone.utc)
+                                    bucket.append(
+                                        ConversationEntry(
+                                            id=str(entry_id), entry_type=str(entry_type), summary=summary, timestamp=ts
+                                        )
+                                    )
+                if rec_path.exists():
+                    payload = json.loads(rec_path.read_text(encoding="utf-8"))
+                    if isinstance(payload, dict) and payload.get("user") == user:
+                        self._recommendation_files[user] = rec_path
+                        user_data = self._ensure_user(user)
+                        recs = payload.get("recommendations", {}) or {}
+                        for person, rec in recs.items():
+                            if not isinstance(person, str) or not isinstance(rec, dict):
+                                continue
+                            entry = self._parse_recommendation(rec)
+                            if entry:
+                                user_data.recommendations[person] = entry
+            except Exception as exc:  # noqa: BLE001
+                self._logger.warning("Failed to parse hydrated files for user=%s: %s", user, exc)
+
+    def _s3_upload_user(self, user: str) -> None:
+        if not self._use_s3 or s3_cache is None:
+            return
+        try:
+            key = s3_cache.key_for_conversations(user)
+            s3_cache.upload_file(key, self._path_for_user(user))
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning("S3 upload conversations failed for user=%s: %s", user, exc)
 
     def _path_for_recommendations(self, user: str) -> Path:
         existing = self._recommendation_files.get(user)
