@@ -3,93 +3,96 @@
   <head>
     <meta charset="utf-8" />
     <title>WriteBackReminder – Follow-up suggestions</title>
-    <style>
-      body { font-family: sans-serif; margin: 2rem auto; max-width: 720px; }
-      header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
-      h1 { margin: 0; }
-      table { width: 100%; border-collapse: collapse; }
-      th, td { padding: 0.75rem; border-bottom: 1px solid #ddd; text-align: left; }
-      th { background: #f3f4f8; }
-      tbody tr:hover { background: #f9fbff; }
-      .urgency-high { color: #a42525; font-weight: 700; }
-      .urgency-medium { color: #c47a00; font-weight: 600; }
-      .urgency-low { color: #2f7a2f; font-weight: 600; }
-      .text-muted { color: #555; font-size: 0.9rem; }
-      .actions { display: flex; gap: 0.75rem; align-items: center; }
-      .actions a, .actions button { padding: 0.45rem 0.9rem; border-radius: 4px; font-size: 1rem; text-decoration: none; }
-      .link { border: 1px solid #333; color: #333; }
-      .link:hover { background: #333; color: #fff; }
-      button { border: none; cursor: pointer; }
-      .loading-button { min-width: 9.5rem; }
-    </style>
+    <script src="https://cdn.tailwindcss.com"></script>
   </head>
-  <body data-user-email="{{ active_user_email }}">
-    <header>
-      <div>
-        <h1>Follow-up suggestions</h1>
-        <p>
-          Logged in as {{ active_user_name or active_user_email }}
-          {% if active_user_name and active_user_email and active_user_name != active_user_email %}
-          ({{ active_user_email }})
-          {% endif %}
-        </p>
-      </div>
-      <div class="actions">
-        {% set is_refreshing = refresh_in_progress|default(False) %}
-        <form
-          method="post"
-          action="{{ url_for('refresh_recommendations') }}"
-          class="refresh-form"
-          data-refresh-endpoint="{{ url_for('refresh_recommendations_api') }}"
-          data-status-endpoint="{{ url_for('refresh_recommendations_status') }}"
-        >
-          <button
-            type="submit"
-            class="loading-button"
-            data-loading-label="Refreshing"
-            data-default-label="Refresh follow-ups"
-            data-refreshing="{{ 'true' if is_refreshing else 'false' }}"
-            {% if is_refreshing %}disabled{% endif %}
+  <body data-user-email="{{ active_user_email }}" data-selected-person="" class="min-h-screen bg-slate-100 text-slate-900">
+    <div class="mx-auto flex max-w-5xl flex-col gap-8 px-4 py-10">
+      <header class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h1 class="text-3xl font-semibold text-slate-900">Follow-up suggestions</h1>
+          <p class="mt-1 text-sm text-slate-600">
+            Logged in as {{ active_user_name or active_user_email }}
+            {% if active_user_name and active_user_email and active_user_name != active_user_email %}
+            ({{ active_user_email }})
+            {% endif %}
+          </p>
+        </div>
+        <div class="flex flex-wrap items-center gap-3">
+          {% set is_refreshing = refresh_in_progress|default(False) %}
+          <form
+            method="post"
+            action="{{ url_for('refresh_recommendations') }}"
+            class="refresh-form"
+            data-refresh-endpoint="{{ url_for('refresh_recommendations_api') }}"
+            data-status-endpoint="{{ url_for('refresh_recommendations_status') }}"
           >
-            {% if is_refreshing %}Refreshing ...{% else %}Refresh follow-ups{% endif %}
-          </button>
-        </form>
-        <a href="{{ url_for('conversations') }}" class="link">Back to conversations</a>
-        <form method="post" action="{{ url_for('logout') }}">
-          <button type="submit">Switch user</button>
-        </form>
-      </div>
-      <div class="refresh-status" data-refresh-status role="status" aria-live="polite"></div>
-    </header>
+            <button
+              type="submit"
+              class="loading-button inline-flex h-10 w-44 items-center justify-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+              data-loading-label="Refreshing"
+              data-default-label="Refresh follow-ups"
+              data-refreshing="{{ 'true' if is_refreshing else 'false' }}"
+              {% if is_refreshing %}disabled{% endif %}
+            >
+              {% if is_refreshing %}Refreshing ...{% else %}Refresh follow-ups{% endif %}
+            </button>
+          </form>
+          <a
+            href="{{ url_for('conversations') }}"
+            class="inline-flex h-10 items-center rounded-md border border-slate-300 bg-white px-4 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-100"
+          >
+            Back to conversations
+          </a>
+          <form method="post" action="{{ url_for('logout') }}">
+            <button
+              type="submit"
+              class="inline-flex h-10 items-center rounded-md border border-rose-200 bg-rose-500 px-3 text-sm font-semibold text-white shadow-sm transition hover:bg-rose-600 focus:outline-none focus:ring-2 focus:ring-rose-300"
+            >
+              Switch user
+            </button>
+          </form>
+        </div>
+      </header>
 
-    <div data-recommendations-container>
-      {% if recommendations %}
-      <table>
-        <thead>
-          <tr>
-            <th>Person</th>
-            <th>Urgency</th>
-            <th>Proposed response</th>
-            <th>Rationale</th>
-            <th>Generated</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for person, rec in recommendations %}
-          {% set urgency_class = 'urgency-high' if rec.urgency >= 8 else ('urgency-medium' if rec.urgency >= 5 else 'urgency-low') %}
-          <tr>
-            <td><a href="{{ url_for('conversations', person=person) }}">{{ person }}</a></td>
-            <td class="{{ urgency_class }}">{{ rec.urgency }}/10</td>
-            <td>{{ rec.proposed_response }}</td>
-            <td>{{ rec.rationale }}</td>
-            <td class="text-muted">{{ rec.generated_at.strftime('%Y-%m-%d %H:%M UTC') }}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-      {% else %}
-      <p class="text-muted">No follow-up suggestions generated yet. Log conversations to see recommendations here.</p>
-      {% endif %}
+      <div class="h-5 text-sm text-slate-500" data-refresh-status role="status" aria-live="polite"></div>
+
+      <div data-recommendations-container class="rounded-2xl border border-slate-200 bg-white shadow-sm">
+        {% if recommendations %}
+        <table class="min-w-full divide-y divide-slate-200">
+          <thead class="bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+            <tr>
+              <th scope="col" class="px-4 py-3">Person</th>
+              <th scope="col" class="px-4 py-3">Urgency</th>
+              <th scope="col" class="px-4 py-3">Proposed response</th>
+              <th scope="col" class="px-4 py-3">Rationale</th>
+              <th scope="col" class="px-4 py-3">Generated</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-200 text-sm text-slate-700">
+            {% for person, rec in recommendations %}
+            {% set urgency_class = 'text-rose-600' if rec.urgency >= 8 else ('text-amber-600' if rec.urgency >= 5 else 'text-emerald-600') %}
+            <tr class="odd:bg-white even:bg-slate-50">
+              <td class="px-4 py-3 font-medium text-slate-800">
+                <a href="{{ url_for('conversations', person=person) }}" class="text-sky-600 hover:underline">
+                  {{ person }}
+                </a>
+              </td>
+              <td class="px-4 py-3 font-semibold {{ urgency_class }}">{{ rec.urgency }}/10</td>
+              <td class="px-4 py-3 text-slate-700">{{ rec.proposed_response }}</td>
+              <td class="px-4 py-3 text-slate-600">{{ rec.rationale }}</td>
+              <td class="px-4 py-3 text-xs uppercase tracking-wide text-slate-500">
+                {{ rec.generated_at.strftime('%Y-%m-%d %H:%M UTC') }}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <p class="px-4 py-6 text-sm text-slate-500">No follow-up suggestions generated yet. Log conversations to see recommendations here.</p>
+        {% endif %}
+      </div>
+
+      <div data-recommendation-container class="hidden"></div>
     </div>
     <script>
       document.addEventListener('DOMContentLoaded', () => {
@@ -159,54 +162,69 @@
           listContainer.innerHTML = '';
           if (!items.length) {
             const empty = document.createElement('p');
-            empty.className = 'text-muted';
+            empty.className = 'text-sm text-slate-500';
             empty.textContent = 'No follow-up suggestions generated yet. Log conversations to see recommendations here.';
             listContainer.appendChild(empty);
             return;
           }
 
           const table = document.createElement('table');
+          table.className = 'min-w-full overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm';
           const thead = document.createElement('thead');
+          thead.className = 'bg-slate-50';
           const headRow = document.createElement('tr');
+          headRow.className = 'text-left text-xs font-semibold uppercase tracking-wide text-slate-500';
           ['Person', 'Urgency', 'Proposed response', 'Rationale', 'Generated'].forEach((label) => {
             const th = document.createElement('th');
             th.textContent = label;
+            th.className = 'px-4 py-3';
             headRow.appendChild(th);
           });
           thead.appendChild(headRow);
           table.appendChild(thead);
 
           const tbody = document.createElement('tbody');
+          tbody.className = 'divide-y divide-slate-200 text-sm text-slate-700';
           items.forEach((item) => {
             const row = document.createElement('tr');
+            row.className = 'odd:bg-white even:bg-slate-50';
 
             const personCell = document.createElement('td');
             if (item.conversation_url) {
               const link = document.createElement('a');
               link.href = item.conversation_url;
               link.textContent = item.person;
+              link.className = 'text-sky-600 hover:underline';
               personCell.appendChild(link);
             } else {
               personCell.textContent = item.person;
             }
+            personCell.className = 'px-4 py-3 font-medium text-slate-800';
             row.appendChild(personCell);
 
             const urgencyCell = document.createElement('td');
-            const urgencyClass = item.urgency >= 8 ? 'urgency-high' : item.urgency >= 5 ? 'urgency-medium' : 'urgency-low';
-            urgencyCell.className = urgencyClass;
+            const urgencyClass =
+              item.urgency >= 8
+                ? 'text-rose-600'
+                : item.urgency >= 5
+                ? 'text-amber-600'
+                : 'text-emerald-600';
+            urgencyCell.className = `px-4 py-3 font-semibold ${urgencyClass}`;
             urgencyCell.textContent = `${item.urgency}/10`;
             row.appendChild(urgencyCell);
 
             const responseCell = document.createElement('td');
+            responseCell.className = 'px-4 py-3 text-slate-700';
             responseCell.textContent = item.proposed_response;
             row.appendChild(responseCell);
 
             const rationaleCell = document.createElement('td');
+            rationaleCell.className = 'px-4 py-3 text-slate-600';
             rationaleCell.textContent = item.rationale;
             row.appendChild(rationaleCell);
 
             const timestampCell = document.createElement('td');
-            timestampCell.className = 'text-muted';
+            timestampCell.className = 'px-4 py-3 text-xs uppercase tracking-wide text-slate-500';
             timestampCell.textContent = item.generated_label || item.generated_at;
             row.appendChild(timestampCell);
 
@@ -224,31 +242,32 @@
           const match = items.find((item) => item.person === selectedPerson);
           if (!match) {
             const message = document.createElement('p');
-            message.className = 'text-muted';
+            message.className = 'text-sm text-slate-500';
             message.textContent = 'No AI follow-up yet. Refresh to generate one.';
             cardContainer.appendChild(message);
             return;
           }
 
           const section = document.createElement('section');
-          section.className = 'recommendation';
+          section.className = 'space-y-3 rounded-2xl border border-sky-200 bg-sky-50 p-6 shadow-sm';
 
           const title = document.createElement('h2');
           title.textContent = 'Suggested follow-up';
+          title.className = 'text-lg font-semibold text-slate-900';
           section.appendChild(title);
 
           const urgency = document.createElement('p');
-          urgency.className = 'urgency';
+          urgency.className = 'text-sm font-semibold text-sky-800';
           urgency.textContent = `Urgency: ${match.urgency} / 10`;
           section.appendChild(urgency);
 
           const summary = document.createElement('p');
-          summary.className = 'summary';
+          summary.className = 'text-base text-slate-800';
           summary.textContent = match.proposed_response;
           section.appendChild(summary);
 
           const rationale = document.createElement('p');
-          rationale.className = 'rationale';
+          rationale.className = 'text-sm text-slate-700';
           const rationaleLabel = document.createElement('strong');
           rationaleLabel.textContent = 'Why:';
           rationale.appendChild(rationaleLabel);
@@ -256,7 +275,7 @@
           section.appendChild(rationale);
 
           const generated = document.createElement('p');
-          generated.className = 'generated';
+          generated.className = 'text-xs uppercase tracking-wide text-slate-500';
           generated.textContent = `Generated ${match.generated_label || match.generated_at}`;
           section.appendChild(generated);
 
