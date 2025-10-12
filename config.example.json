@@ -4,7 +4,7 @@
   "user_data_dir": "userdata",
   "recommendations_dir": "userdata/recommendations",
   "followup_refresh_hours": 24,
-  "followup_model": "gpt-5-2025-08-07",
+  "followup_model": "gpt-4o-2024-08-06",
   "openai_api_key": "sk-your-key",
   "use_s3": false,
   "aws_access_key_id": "your-access-key",

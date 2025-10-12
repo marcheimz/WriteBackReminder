@@ -14,7 +14,7 @@ from urllib.parse import urlencode
 
 import httpx
 from fastapi import FastAPI, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, JSONResponse
 from starlette.middleware.sessions import SessionMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from starlette.templating import Jinja2Templates
@@ -333,7 +333,8 @@ def create_app() -> FastAPI:
         if not user_email:
             return RedirectResponse(request.url_for("landing"))
 
-        await maybe_refresh_followups(user_filter=user_email)
+        if not app.state._followup_in_progress.get(user_email):
+            asyncio.create_task(maybe_refresh_followups(user_filter=user_email))
 
         selected_person = request.query_params.get("person") or None
         known_people = app.state.conversation_store.people_for_user(user_email)
@@ -364,6 +365,31 @@ def create_app() -> FastAPI:
         }
         return templates.TemplateResponse("index.html", context)
 
+    async def _serialized_recommendations(request: Request, user_email: str) -> list[dict[str, object]]:
+        recommendations = app.state.conversation_store.recommendations_for_user(user_email)
+        sorted_recs = sorted(
+            recommendations.items(),
+            key=lambda item: item[1].urgency,
+            reverse=True,
+        )
+        payload: list[dict[str, object]] = []
+        conversations_url = request.url_for("conversations")
+        for person, rec in sorted_recs:
+            query = urlencode({"person": person})
+            conversation_url = f"{conversations_url}?{query}"
+            payload.append(
+                {
+                    "person": person,
+                    "urgency": rec.urgency,
+                    "proposed_response": rec.proposed_response,
+                    "rationale": rec.rationale,
+                    "generated_at": rec.generated_at.isoformat(),
+                    "generated_label": rec.generated_at.strftime("%Y-%m-%d %H:%M UTC"),
+                    "conversation_url": conversation_url,
+                }
+            )
+        return payload
+
     @app.post("/recommendations/refresh")
     async def refresh_recommendations(request: Request):
         user_email = request.session.get("active_user_email")
@@ -378,13 +404,64 @@ def create_app() -> FastAPI:
             return RedirectResponse(referer, status_code=303)
         return RedirectResponse(request.url_for("recommendations_page"), status_code=303)
 
+    @app.post("/api/recommendations/refresh")
+    async def refresh_recommendations_api(request: Request):
+        user_email = request.session.get("active_user_email")
+        if not user_email:
+            return JSONResponse({"error": "not_authenticated"}, status_code=401)
+
+        existing = bool(app.state._followup_in_progress.get(user_email))
+        started = False
+        if not existing:
+            started = True
+            asyncio.create_task(maybe_refresh_followups(force=True, user_filter=user_email))
+
+        payload = await _serialized_recommendations(request, user_email)
+
+        refresh_in_progress = started or bool(app.state._followup_in_progress.get(user_email))
+
+        return JSONResponse(
+            {
+                "recommendations": payload,
+                "count": len(payload),
+                "refresh_in_progress": refresh_in_progress,
+                "status": "started" if started else "already_running",
+                "message": (
+                    "Refreshing follow-ups…" if refresh_in_progress else "Recommendations are up to date."
+                ),
+            }
+        )
+
+    @app.get("/api/recommendations/status")
+    async def refresh_recommendations_status(request: Request):
+        user_email = request.session.get("active_user_email")
+        if not user_email:
+            return JSONResponse({"error": "not_authenticated"}, status_code=401)
+
+        in_progress = bool(app.state._followup_in_progress.get(user_email))
+        payload = await _serialized_recommendations(request, user_email)
+        message = (
+            "Refreshing follow-ups…" if in_progress else (
+                "No recommendations available." if not payload else "Recommendations refreshed."
+            )
+        )
+        return JSONResponse(
+            {
+                "recommendations": payload,
+                "count": len(payload),
+                "refresh_in_progress": in_progress,
+                "message": message,
+            }
+        )
+
     @app.get("/recommendations")
     async def recommendations_page(request: Request):
         user_email = request.session.get("active_user_email")
         if not user_email:
             return RedirectResponse(request.url_for("landing"))
 
-        await maybe_refresh_followups(user_filter=user_email)
+        if not app.state._followup_in_progress.get(user_email):
+            asyncio.create_task(maybe_refresh_followups(user_filter=user_email))
 
         recommendations = app.state.conversation_store.recommendations_for_user(user_email)
         sorted_recs = sorted(

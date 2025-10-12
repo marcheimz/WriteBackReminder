@@ -36,11 +36,18 @@
       </div>
       <div class="actions">
         {% set is_refreshing = refresh_in_progress|default(False) %}
-        <form method="post" action="{{ url_for('refresh_recommendations') }}" class="refresh-form">
+        <form
+          method="post"
+          action="{{ url_for('refresh_recommendations') }}"
+          class="refresh-form"
+          data-refresh-endpoint="{{ url_for('refresh_recommendations_api') }}"
+          data-status-endpoint="{{ url_for('refresh_recommendations_status') }}"
+        >
           <button
             type="submit"
             class="loading-button"
             data-loading-label="Refreshing"
+            data-default-label="Refresh follow-ups"
             data-refreshing="{{ 'true' if is_refreshing else 'false' }}"
             {% if is_refreshing %}disabled{% endif %}
           >
@@ -52,53 +59,71 @@
           <button type="submit">Switch user</button>
         </form>
       </div>
+      <div class="refresh-status" data-refresh-status role="status" aria-live="polite"></div>
     </header>
 
-    {% if recommendations %}
-    <table>
-      <thead>
-        <tr>
-          <th>Person</th>
-          <th>Urgency</th>
-          <th>Proposed response</th>
-          <th>Rationale</th>
-          <th>Generated</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for person, rec in recommendations %}
-        {% set urgency_class = 'urgency-high' if rec.urgency >= 8 else ('urgency-medium' if rec.urgency >= 5 else 'urgency-low') %}
-        <tr>
-          <td><a href="{{ url_for('conversations', person=person) }}">{{ person }}</a></td>
-          <td class="{{ urgency_class }}">{{ rec.urgency }}/10</td>
-          <td>{{ rec.proposed_response }}</td>
-          <td>{{ rec.rationale }}</td>
-          <td class="text-muted">{{ rec.generated_at.strftime('%Y-%m-%d %H:%M UTC') }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% else %}
-    <p>No follow-up suggestions generated yet. Log conversations to see recommendations here.</p>
-    {% endif %}
+    <div data-recommendations-container>
+      {% if recommendations %}
+      <table>
+        <thead>
+          <tr>
+            <th>Person</th>
+            <th>Urgency</th>
+            <th>Proposed response</th>
+            <th>Rationale</th>
+            <th>Generated</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for person, rec in recommendations %}
+          {% set urgency_class = 'urgency-high' if rec.urgency >= 8 else ('urgency-medium' if rec.urgency >= 5 else 'urgency-low') %}
+          <tr>
+            <td><a href="{{ url_for('conversations', person=person) }}">{{ person }}</a></td>
+            <td class="{{ urgency_class }}">{{ rec.urgency }}/10</td>
+            <td>{{ rec.proposed_response }}</td>
+            <td>{{ rec.rationale }}</td>
+            <td class="text-muted">{{ rec.generated_at.strftime('%Y-%m-%d %H:%M UTC') }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p class="text-muted">No follow-up suggestions generated yet. Log conversations to see recommendations here.</p>
+      {% endif %}
+    </div>
     <script>
       document.addEventListener('DOMContentLoaded', () => {
-        const body = document.body;
-        const userEmail = body.dataset.userEmail;
-        if (!userEmail) {
+        const refreshForms = document.querySelectorAll('.refresh-form');
+        if (!refreshForms.length) {
           return;
         }
 
-        const storageKey = `wbr-refresh-${userEmail}`;
-        const intervals = new WeakMap();
+        const statusEl = document.querySelector('[data-refresh-status]');
+        const listContainer = document.querySelector('[data-recommendations-container]');
+        const cardContainer = document.querySelector('[data-recommendation-container]');
+        const selectedPerson = (document.body.dataset.selectedPerson || '').trim();
         const frames = ['.', '..', '...'];
+        const intervals = new WeakMap();
+        const POLL_INTERVAL_MS = 2500;
 
-        const startAnimation = (button) => {
-          if (intervals.has(button)) {
+        const setStatus = (message, isError = false) => {
+          if (!statusEl) {
             return;
           }
-          const defaultLabel = button.dataset.defaultLabel || button.textContent.trim();
+          statusEl.textContent = '';
+          if (isError && message) {
+            console.error(message);
+          }
+        };
+
+        const startAnimation = (button) => {
+          if (!button || intervals.has(button)) {
+            return;
+          }
+          const defaultLabel = button.dataset.defaultLabel || button.textContent.trim() || 'Refresh follow-ups';
           button.dataset.defaultLabel = defaultLabel;
+          button.dataset.animating = 'true';
+          button.dataset.refreshing = 'true';
           const baseLabel = button.dataset.loadingLabel || 'Refreshing';
           let frameIndex = 0;
           const updateLabel = () => {
@@ -106,74 +131,262 @@
             frameIndex = (frameIndex + 1) % frames.length;
           };
           button.disabled = true;
-          button.dataset.animating = 'true';
-          button.dataset.refreshing = 'true';
           updateLabel();
           const intervalId = window.setInterval(updateLabel, 350);
           intervals.set(button, intervalId);
         };
 
         const stopAnimation = (button) => {
+          if (!button) {
+            return;
+          }
           if (intervals.has(button)) {
             const id = intervals.get(button);
             window.clearInterval(id);
             intervals.delete(button);
           }
+          button.dataset.animating = 'false';
+          button.dataset.refreshing = 'false';
           const defaultLabel = button.dataset.defaultLabel || 'Refresh follow-ups';
           button.textContent = defaultLabel;
           button.disabled = false;
-          button.dataset.animating = '';
-          button.dataset.refreshing = 'false';
         };
 
-        for (const form of document.querySelectorAll('.refresh-form')) {
+        const renderRecommendationsTable = (items) => {
+          if (!listContainer) {
+            return;
+          }
+          listContainer.innerHTML = '';
+          if (!items.length) {
+            const empty = document.createElement('p');
+            empty.className = 'text-muted';
+            empty.textContent = 'No follow-up suggestions generated yet. Log conversations to see recommendations here.';
+            listContainer.appendChild(empty);
+            return;
+          }
+
+          const table = document.createElement('table');
+          const thead = document.createElement('thead');
+          const headRow = document.createElement('tr');
+          ['Person', 'Urgency', 'Proposed response', 'Rationale', 'Generated'].forEach((label) => {
+            const th = document.createElement('th');
+            th.textContent = label;
+            headRow.appendChild(th);
+          });
+          thead.appendChild(headRow);
+          table.appendChild(thead);
+
+          const tbody = document.createElement('tbody');
+          items.forEach((item) => {
+            const row = document.createElement('tr');
+
+            const personCell = document.createElement('td');
+            if (item.conversation_url) {
+              const link = document.createElement('a');
+              link.href = item.conversation_url;
+              link.textContent = item.person;
+              personCell.appendChild(link);
+            } else {
+              personCell.textContent = item.person;
+            }
+            row.appendChild(personCell);
+
+            const urgencyCell = document.createElement('td');
+            const urgencyClass = item.urgency >= 8 ? 'urgency-high' : item.urgency >= 5 ? 'urgency-medium' : 'urgency-low';
+            urgencyCell.className = urgencyClass;
+            urgencyCell.textContent = `${item.urgency}/10`;
+            row.appendChild(urgencyCell);
+
+            const responseCell = document.createElement('td');
+            responseCell.textContent = item.proposed_response;
+            row.appendChild(responseCell);
+
+            const rationaleCell = document.createElement('td');
+            rationaleCell.textContent = item.rationale;
+            row.appendChild(rationaleCell);
+
+            const timestampCell = document.createElement('td');
+            timestampCell.className = 'text-muted';
+            timestampCell.textContent = item.generated_label || item.generated_at;
+            row.appendChild(timestampCell);
+
+            tbody.appendChild(row);
+          });
+          table.appendChild(tbody);
+          listContainer.appendChild(table);
+        };
+
+        const renderSelectedRecommendation = (items) => {
+          if (!cardContainer || !selectedPerson) {
+            return;
+          }
+          cardContainer.innerHTML = '';
+          const match = items.find((item) => item.person === selectedPerson);
+          if (!match) {
+            const message = document.createElement('p');
+            message.className = 'text-muted';
+            message.textContent = 'No AI follow-up yet. Refresh to generate one.';
+            cardContainer.appendChild(message);
+            return;
+          }
+
+          const section = document.createElement('section');
+          section.className = 'recommendation';
+
+          const title = document.createElement('h2');
+          title.textContent = 'Suggested follow-up';
+          section.appendChild(title);
+
+          const urgency = document.createElement('p');
+          urgency.className = 'urgency';
+          urgency.textContent = `Urgency: ${match.urgency} / 10`;
+          section.appendChild(urgency);
+
+          const summary = document.createElement('p');
+          summary.className = 'summary';
+          summary.textContent = match.proposed_response;
+          section.appendChild(summary);
+
+          const rationale = document.createElement('p');
+          rationale.className = 'rationale';
+          const rationaleLabel = document.createElement('strong');
+          rationaleLabel.textContent = 'Why:';
+          rationale.appendChild(rationaleLabel);
+          rationale.append(` ${match.rationale}`);
+          section.appendChild(rationale);
+
+          const generated = document.createElement('p');
+          generated.className = 'generated';
+          generated.textContent = `Generated ${match.generated_label || match.generated_at}`;
+          section.appendChild(generated);
+
+          cardContainer.appendChild(section);
+        };
+
+        const handleResponse = (payload) => {
+          const list = Array.isArray(payload?.recommendations) ? payload.recommendations : [];
+          renderRecommendationsTable(list);
+          renderSelectedRecommendation(list);
+        };
+
+        refreshForms.forEach((form) => {
           if (form.dataset.bound === 'true') {
-            continue;
+            return;
           }
           form.dataset.bound = 'true';
 
+          const endpoint = form.dataset.refreshEndpoint;
+          const statusEndpoint = form.dataset.statusEndpoint;
           const button = form.querySelector('button');
-          if (!button) {
-            continue;
+          if (!endpoint || !statusEndpoint || !button) {
+            return;
           }
 
-          const applyStoredState = () => {
-            const pending = window.localStorage.getItem(storageKey) === 'pending';
-            if (button.dataset.refreshing === 'true' || pending) {
-              startAnimation(button);
-            } else {
-              stopAnimation(button);
+          let pollTimer = null;
+          let lastStart = 0;
+
+          const cancelPoll = () => {
+            if (pollTimer) {
+              window.clearTimeout(pollTimer);
+              pollTimer = null;
             }
           };
 
-          if (button.dataset.refreshing !== 'true') {
-            const pending = window.localStorage.getItem(storageKey);
-            if (pending === 'pending') {
-              window.localStorage.removeItem(storageKey);
+          const pollStatus = async () => {
+            try {
+              const response = await fetch(statusEndpoint, {
+                method: 'GET',
+                headers: {
+                  'X-Requested-With': 'XMLHttpRequest',
+                },
+                credentials: 'same-origin',
+                cache: 'no-store',
+              });
+              if (!response.ok) {
+                throw new Error(`Status request failed: ${response.status}`);
+              }
+              const payload = await response.json();
+              const inProgress = Boolean(payload?.refresh_in_progress);
+              button.dataset.refreshing = inProgress ? 'true' : 'false';
+              handleResponse(payload);
+              if (inProgress) {
+                setStatus(payload?.message || 'Refreshing follow-ups…');
+                pollTimer = window.setTimeout(pollStatus, POLL_INTERVAL_MS);
+              } else {
+                if (Date.now() - lastStart < POLL_INTERVAL_MS) {
+                  pollTimer = window.setTimeout(pollStatus, 250);
+                  return;
+                }
+                stopAnimation(button);
+                cancelPoll();
+                setStatus(payload?.message || 'Recommendations refreshed.', false);
+              }
+            } catch (error) {
+              console.error('Failed to poll refresh status', error);
+              stopAnimation(button);
+              cancelPoll();
+              setStatus('Failed to refresh follow-ups. Please try again.', true);
             }
+          };
+
+          const ensurePolling = () => {
+            if (!pollTimer) {
+              pollTimer = window.setTimeout(pollStatus, 0);
+            }
+          };
+
+          if (button.dataset.refreshing === 'true') {
+            startAnimation(button);
+            lastStart = Date.now();
+            ensurePolling();
           }
 
-          applyStoredState();
-
-          form.addEventListener('submit', (event) => {
-            if (button.dataset.animating === 'true') {
-              event.preventDefault();
+          form.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            if (intervals.has(button)) {
               return;
             }
-            window.localStorage.setItem(storageKey, 'pending');
-            startAnimation(button);
-          });
 
-          window.addEventListener('storage', (event) => {
-            if (event.key === storageKey) {
-              applyStoredState();
+            startAnimation(button);
+            setStatus('Refreshing follow-ups…');
+            lastStart = Date.now();
+            ensurePolling();
+
+            try {
+              const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: {
+                  'X-Requested-With': 'XMLHttpRequest',
+                },
+                credentials: 'same-origin',
+              });
+
+              if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(errorText || response.statusText);
+              }
+
+              const payload = await response.json();
+              handleResponse(payload);
+              const inProgress = Boolean(payload?.refresh_in_progress);
+              button.dataset.refreshing = inProgress ? 'true' : 'false';
+              const message = payload?.message || (inProgress ? 'Refreshing follow-ups…' : 'Recommendations refreshed.');
+              setStatus(message, false);
+              if (!inProgress) {
+                stopAnimation(button);
+                cancelPoll();
+              } else {
+                lastStart = Date.now();
+                ensurePolling();
+              }
+            } catch (error) {
+              console.error('Failed to refresh follow-ups', error);
+              setStatus('Failed to refresh follow-ups. Please try again.', true);
+              stopAnimation(button);
+              cancelPoll();
             }
           });
-        }
-
-        if (window.performance && window.performance.getEntriesByType('navigation')[0]?.type === 'reload') {
-          window.localStorage.removeItem(storageKey);
-        }
+        });
       });
     </script>
   </body>
